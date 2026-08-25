@@ -1,0 +1,252 @@
+# nw-lb-go demo stack: three upstreams, the load balancer, Prometheus, Grafana.
+#
+#   docker compose up -d --build      # bring the stack up
+#   docker compose --profile bench run --rm loadgen   # measure it
+#
+# There is no top-level `version:` key — it has been obsolete since Compose v2
+# and emits a warning.
+#
+# Published host ports:
+#   8080  lb          gRPC data plane
+#   9090  lb          admin HTTP (/metrics, /healthz, /readyz, /backends, /debug/pprof)
+#   50051 backend-1   gRPC          9101 backend-1 admin
+#   50052 backend-2   gRPC          9102 backend-2 admin
+#   50053 backend-3   gRPC          9103 backend-3 admin
+#   9091  prometheus  UI            (9090 in-container; remapped, the LB owns 9090)
+#   3000  grafana     UI
+
+name: nw-lb-go
+
+# ---------------------------------------------------------------------------
+# Shared fragments
+# ---------------------------------------------------------------------------
+
+# The three upstreams are the same image with different identities and
+# different injected latency, so the demo shows a real latency spread across
+# backends rather than three identical lines on the dashboard.
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: deploy/docker/Dockerfile.backend
+    args:
+      VERSION: ${VERSION:-dev}
+  image: nw-lb-go/backend:${VERSION:-dev}
+  restart: unless-stopped
+  networks: [lbnet]
+  stop_grace_period: 15s
+  # No healthcheck: the runtime is gcr.io/distroless/static-debian12, which
+  # ships no shell and no HTTP client. A compose `healthcheck:` execs its test
+  # inside this container, so it hits exactly the same wall a Dockerfile
+  # HEALTHCHECK does. Backend liveness is observed from outside instead:
+  #   - the LB probes grpc.health.v1.Health/Check and exports lb_backend_healthy
+  #   - Prometheus scrapes :9101 and exports `up{job="backends"}`
+  # See deploy/docker/Dockerfile.backend for the alpine swap that would make an
+  # in-container probe possible.
+
+services:
+  # -------------------------------------------------------------------------
+  # Upstreams
+  # -------------------------------------------------------------------------
+  backend-1:
+    <<: *backend
+    container_name: nw-lb-backend-1
+    environment:
+      BACKEND_ID: backend-1
+    # -delay is base latency added to every reply. Spread: 2ms / 8ms / 25ms.
+    command: ["-listen", ":50051", "-admin-listen", ":9101", "-delay", "2ms", "-health", "serving"]
+    ports:
+      - "50051:50051"
+      - "9101:9101"
+
+  backend-2:
+    <<: *backend
+    container_name: nw-lb-backend-2
+    environment:
+      BACKEND_ID: backend-2
+    command: ["-listen", ":50051", "-admin-listen", ":9101", "-delay", "8ms", "-health", "serving"]
+    ports:
+      - "50052:50051"
+      - "9102:9101"
+
+  backend-3:
+    <<: *backend
+    container_name: nw-lb-backend-3
+    environment:
+      BACKEND_ID: backend-3
+    # The slow one. Its p99 is what pushes the Duration panel toward the SLO
+    # line, and it is the obvious candidate to trip a breaker if you raise
+    # -fail-ratio on it.
+    command: ["-listen", ":50051", "-admin-listen", ":9101", "-delay", "25ms", "-health", "serving"]
+    ports:
+      - "50053:50051"
+      - "9103:9101"
+
+  # -------------------------------------------------------------------------
+  # Load balancer
+  # -------------------------------------------------------------------------
+  lb:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.lb
+      args:
+        VERSION: ${VERSION:-dev}
+    image: nw-lb-go/lb:${VERSION:-dev}
+    container_name: nw-lb-lb
+    restart: unless-stopped
+    networks: [lbnet]
+    depends_on:
+      # service_started, not service_healthy: the backends have no healthcheck
+      # (see the x-backend note), and the LB is designed to start against dead
+      # upstreams anyway — its own health checker marks them unhealthy and the
+      # balancer fails open until one comes back.
+      backend-1:
+        condition: service_started
+      backend-2:
+        condition: service_started
+      backend-3:
+        condition: service_started
+    volumes:
+      # config/lb.yaml already names the backends by compose service
+      # (backend-1:50051 ...), which the bridge network's embedded DNS resolves.
+      # config/lb.local.yaml is the loopback variant used by `make run-lb`.
+      - ./config/lb.yaml:/etc/lb/lb.yaml:ro
+    environment:
+      # LB_* overrides are applied after the YAML, so this wins over the file.
+      # To repoint the LB without editing config, set:
+      #   LB_BACKENDS: "backend-1=backend-1:50051,backend-2=backend-2:50051"
+      LB_LOG_LEVEL: info
+    command: ["-config", "/etc/lb/lb.yaml"]
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    # Must exceed proxy.shutdown_grace (10s) in config/lb.yaml, or compose
+    # SIGKILLs the process mid-drain.
+    stop_grace_period: 20s
+    # No healthcheck, same distroless reason as the backends. /readyz on :9090
+    # is the readiness signal and Prometheus turns it into `up{job="lb"}`.
+
+  # -------------------------------------------------------------------------
+  # Observability
+  # -------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: nw-lb-prometheus
+    restart: unless-stopped
+    networks: [lbnet]
+    depends_on:
+      lb:
+        condition: service_started
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=6h"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9091:9090"
+    # prom/prometheus is busybox-based, so it does have a shell and wget.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: nw-lb-grafana
+    restart: unless-stopped
+    networks: [lbnet]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Local demo only. Anonymous viewer access means no login prompt on
+      # http://localhost:3000; do not copy this into anything reachable.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    ports:
+      - "3000:3000"
+    # grafana/grafana is alpine-based: /bin/sh and busybox wget are present.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  # -------------------------------------------------------------------------
+  # Benchmark (profile: bench)
+  # -------------------------------------------------------------------------
+  # Not started by `docker compose up` — it only exists under the `bench`
+  # profile, because it is a one-shot job that would otherwise run at boot:
+  #   docker compose --profile bench run --rm loadgen
+  #   docker compose --profile bench run --rm loadgen -rps 5000 -duration 60s \
+  #     -out /bench/results/hot.json -label hot
+  # Anything after `loadgen` replaces the default command below in full, so the
+  # target is also supplied via LOADGEN_TARGET: an override that omits -target
+  # still reaches the load balancer instead of the container's own loopback.
+  loadgen:
+    profiles: ["bench"]
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.loadgen
+      args:
+        VERSION: ${VERSION:-dev}
+    image: nw-lb-go/loadgen:${VERSION:-dev}
+    networks: [lbnet]
+    environment:
+      LOADGEN_TARGET: "lb:8080"
+    depends_on:
+      lb:
+        condition: service_started
+    volumes:
+      # Reports land in ./bench/results on the host. The container runs as
+      # uid 65532 (distroless nonroot); on Linux, if you get "permission
+      # denied" writing the report, either `chmod 777 bench/results` or add
+      # `user: "${UID}:${GID}"` here. Docker Desktop on macOS/Windows maps
+      # ownership for you and needs neither.
+      - ./bench/results:/bench/results
+    # A finished benchmark must stay finished.
+    restart: "no"
+    command:
+      - "-target=lb:8080"
+      - "-mode=open"
+      - "-rps=2000"
+      - "-duration=30s"
+      # -warmup is a request COUNT, not a duration: these are executed and
+      # discarded before the measurement window opens.
+      - "-warmup=2000"
+      - "-concurrency=64"
+      - "-conns=4"
+      - "-keys=1000"
+      - "-method=unary"
+      - "-payload=256"
+      - "-slo=200ms"
+      - "-label=compose-open-2000rps"
+      - "-out=/bench/results/compose-open-2000rps.json"
+
+# ---------------------------------------------------------------------------
+# One user-defined bridge network. This is what gives the stack embedded DNS,
+# so the LB can dial `backend-1:50051` by service name; the default bridge
+# would not resolve those.
+# ---------------------------------------------------------------------------
+networks:
+  lbnet:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

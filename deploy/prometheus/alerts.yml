@@ -1,0 +1,213 @@
+# Alerting rules for nw-lb-go. Mounted read-only at /etc/prometheus/alerts.yml
+# and loaded by the rule_files entry in prometheus.yml.
+#
+# Every expression uses only the metric names in docs/CONTRACT.md:
+#   lb_requests_total{method,code}            counter
+#   lb_request_duration_seconds_bucket{le,..} histogram
+#   lb_backend_healthy{backend}               gauge
+#   lb_circuit_state{name}                    gauge  (0 closed, 1 open, 2 half-open)
+#   lb_rate_limited_total{method}             counter
+#   lb_failovers_total{method,reason}         counter
+#   lb_panics_total{method}                   counter
+#
+# Validate after editing:
+#   docker run --rm -v "$PWD/deploy/prometheus:/p" prom/prometheus:v3.1.0 \
+#     promtool check rules /p/alerts.yml
+
+groups:
+  # -------------------------------------------------------------------------
+  # RED: Rate, Errors, Duration. These are the symptom alerts — they describe
+  # what a caller experiences, and they are the only ones worth waking someone
+  # for.
+  # -------------------------------------------------------------------------
+  - name: lb-red
+    interval: 15s
+    rules:
+      # Errors. The ratio is unitless, so it survives traffic swings that a raw
+      # error rate would not. The `and` clause is a floor on volume: at 0.2 rps
+      # a single failure is 5% error rate, and paging on that is noise.
+      - alert: LBHighErrorRatio
+        expr: |
+          (
+              sum(rate(lb_requests_total{code!="OK"}[2m]))
+            /
+              sum(rate(lb_requests_total[2m]))
+          ) > 0.01
+          and
+            sum(rate(lb_requests_total[2m])) > 1
+        for: 2m
+        labels:
+          severity: critical
+          component: loadbalancer
+        annotations:
+          summary: "Load balancer error ratio above 1%"
+          description: >-
+            {{ $value | humanizePercentage }} of RPCs are returning a non-OK
+            status over the last 2 minutes (threshold 1%). Break it down by code
+            with: sum by (code) (rate(lb_requests_total{code!="OK"}[2m]))
+
+      # Duration. The SLO is 200 ms at p99, measured end to end at the LB.
+      # 0.2 is an exact histogram boundary, so this quantile is not interpolated
+      # across the threshold.
+      - alert: LBP99LatencyAboveSLO
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(lb_request_duration_seconds_bucket[5m]))
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+          component: loadbalancer
+          slo: "200ms"
+        annotations:
+          summary: "p99 request latency above the 200ms SLO"
+          description: >-
+            p99 is {{ $value | humanizeDuration }} over a 5 minute window
+            (SLO 200ms). Check whether one upstream is dragging the tail:
+            histogram_quantile(0.99, sum by (le, backend)
+            (rate(lb_upstream_duration_seconds_bucket[5m])))
+
+      # A slower-burning companion to the p99 alert: what fraction of requests
+      # missed the SLO, read straight off the le="0.2" bucket rather than from
+      # an interpolated quantile.
+      - alert: LBSLOBudgetBurn
+        expr: |
+          (
+            1 - (
+                sum(rate(lb_request_duration_seconds_bucket{le="0.2"}[30m]))
+              /
+                sum(rate(lb_request_duration_seconds_count[30m]))
+            )
+          ) > 0.01
+          and
+            sum(rate(lb_request_duration_seconds_count[30m])) > 1
+        for: 15m
+        labels:
+          severity: warning
+          component: loadbalancer
+          slo: "200ms"
+        annotations:
+          summary: "More than 1% of requests are missing the 200ms SLO"
+          description: >-
+            {{ $value | humanizePercentage }} of requests took longer than
+            200ms over the last 30 minutes.
+
+  # -------------------------------------------------------------------------
+  # Cause alerts. These explain a RED symptom; on their own most of them are
+  # warnings, because the LB is designed to absorb them.
+  # -------------------------------------------------------------------------
+  - name: lb-backends
+    interval: 15s
+    rules:
+      # One backend down is survivable — the balancer skips it — but the ring
+      # keeps its slot, so its share of keys is now being served by neighbours.
+      - alert: LBBackendDown
+        expr: lb_backend_healthy == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "Backend {{ $labels.backend }} is unhealthy"
+          description: >-
+            The LB's gRPC health checker has marked {{ $labels.backend }}
+            unhealthy for over a minute (health.fall consecutive failed or
+            non-SERVING probes). Traffic for its keys is failing over to the
+            next ring members.
+
+      # All of them down is the outage. The balancer fails open at this point
+      # (it returns every backend rather than black-holing), so requests are
+      # still being attempted — they are just very likely failing.
+      - alert: LBAllBackendsDown
+        expr: sum(lb_backend_healthy) == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: backend
+        annotations:
+          summary: "No healthy backends"
+          description: >-
+            Every backend is unhealthy. The balancer is failing open and
+            forwarding to unhealthy upstreams because black-holing on a stale
+            health signal would be worse.
+
+      # A target that stops answering scrapes is a different failure from a
+      # backend that answers and reports NOT_SERVING; this catches the former.
+      - alert: LBScrapeTargetDown
+        expr: up{job=~"lb|backends"} == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: monitoring
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.instance }}"
+          description: >-
+            Target {{ $labels.instance }} (job {{ $labels.job }}) has failed
+            its scrape for a minute. Its metrics below are stale.
+
+  - name: lb-resilience
+    interval: 15s
+    rules:
+      # lb_circuit_state: 0 closed, 1 open, 2 half-open. Open means the LB is
+      # fail-fasting with codes.Unavailable rather than spending capacity on a
+      # dependency that is already failing.
+      - alert: LBCircuitOpen
+        expr: lb_circuit_state == 1
+        for: 1m
+        labels:
+          severity: warning
+          component: circuit-breaker
+        annotations:
+          summary: "Circuit breaker {{ $labels.name }} is open"
+          description: >-
+            The breaker for {{ $labels.name }} has been open for a minute:
+            recent failures exceeded circuit_breaker.failure_ratio over
+            circuit_breaker.window. Rejections are counted in
+            lb_rejected_total{reason="circuit_open"}.
+
+      # Rate limiting is a deliberate action, not a fault — but if it is still
+      # happening five minutes later, either a client is misbehaving or the
+      # configured rps is now too low for real traffic.
+      - alert: LBRateLimitingActive
+        expr: sum by (method) (rate(lb_rate_limited_total[2m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: rate-limiter
+        annotations:
+          summary: "Rate limiter is shedding {{ $labels.method }}"
+          description: >-
+            {{ $value | printf "%.1f" }} requests/s to {{ $labels.method }} are
+            being rejected with ResourceExhausted. Raise rate_limit.rps or find
+            the caller.
+
+      # Failover is the LB working as designed, so this threshold is about
+      # volume: a sustained storm means an upstream is flapping under the
+      # health checker's flap damping rather than failing cleanly.
+      - alert: LBFailoverStorm
+        expr: sum(rate(lb_failovers_total[2m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: loadbalancer
+        annotations:
+          summary: "Sustained retry-onto-another-backend rate"
+          description: >-
+            {{ $value | printf "%.1f" }} failovers/s over 2 minutes. Break down
+            by cause with: sum by (reason) (rate(lb_failovers_total[2m]))
+
+      # A recovered panic is a bug in the proxy path. Recovery keeps the
+      # process alive, which is exactly why this must never be silent.
+      - alert: LBPanicRecovered
+        expr: increase(lb_panics_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: loadbalancer
+        annotations:
+          summary: "Recovered panic in {{ $labels.method }}"
+          description: >-
+            The recovery interceptor caught {{ $value | printf "%.0f" }} panic(s)
+            handling {{ $labels.method }} in the last 5 minutes and returned
+            codes.Internal. The stack trace is in the LB logs.

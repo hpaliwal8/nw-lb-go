@@ -1,0 +1,32 @@
+# Grafana datasource provisioning.
+# Mounted read-only at /etc/grafana/provisioning/datasources/prometheus.yml.
+
+apiVersion: 1
+
+# Delete anything previously provisioned under these names first, so editing
+# this file cannot leave a stale duplicate behind.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # Fixed uid. deploy/grafana/dashboards/red.json references this string in
+    # every panel target; if you change it, change it there too or the
+    # dashboard loads with "datasource not found".
+    uid: nw-lb-prometheus
+    orgId: 1
+    access: proxy
+    # Service name on the lbnet bridge network, container-internal port.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Matches global.scrape_interval in deploy/prometheus/prometheus.yml, so
+      # $__rate_interval resolves to something that always covers >= 4 samples.
+      timeInterval: 5s
+      httpMethod: POST
+      manageAlerts: false
+      prometheusType: Prometheus
+      prometheusVersion: 3.1.0

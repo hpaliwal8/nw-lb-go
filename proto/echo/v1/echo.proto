@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package echo.v1;
+
+option go_package = "github.com/hitanshpaliwal/nw-lb-go/gen/echo/v1;echov1";
+
+// EchoService is the demo upstream used to exercise the load balancer.
+// It is deliberately controllable: callers can ask a backend to burn time or
+// fail so failover, circuit breaking and latency behaviour can be measured.
+service EchoService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc ServerStream(EchoRequest) returns (stream EchoResponse);
+  rpc ClientStream(stream EchoRequest) returns (EchoResponse);
+  rpc BidiStream(stream EchoRequest) returns (stream EchoResponse);
+}
+
+message EchoRequest {
+  // Arbitrary payload echoed back; used to size messages in load tests.
+  bytes payload = 1;
+  // Routing affinity key. The load balancer reads its hash key from request
+  // metadata, not from the body, but carrying it here lets the load generator
+  // assert that the same key landed on the same backend.
+  string session_key = 2;
+  // Artificial server-side latency.
+  uint32 delay_ms = 3;
+  // When set the backend returns this gRPC status code instead of OK.
+  uint32 fail_code = 4;
+  // Number of messages to emit for streaming methods.
+  uint32 stream_count = 5;
+}
+
+message EchoResponse {
+  bytes payload = 1;
+  // Identity of the backend that served the call, e.g. "backend-2".
+  string backend_id = 2;
+  // Address the backend is listening on.
+  string backend_addr = 3;
+  // Sequence number within a stream response.
+  uint32 seq = 4;
+  // Nanosecond timestamp taken by the backend when it handled the call.
+  int64 served_unix_nano = 5;
+}

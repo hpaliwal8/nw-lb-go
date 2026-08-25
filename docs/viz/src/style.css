@@ -1,0 +1,233 @@
+/* TikZ-flavoured design tokens.
+ *
+ * The look comes from restraint: hairline strokes, exact geometry, a serif face for labels, and a
+ * palette of four muted accents used sparingly. Everything is a custom property so a diagram never
+ * hard-codes a colour.
+ *
+ * This page is light only, on purpose: it is a technical drawing on paper, and the ink weights and
+ * washes below are tuned for that ground. It therefore paints its own background and declares
+ * color-scheme, so it holds its appearance on a dark host instead of borrowing one. */
+
+:root {
+  --paper: #fdfdfb;
+  --ink: #1c1c1a;
+  --ink-soft: #55534e;
+  --ink-faint: #8a8781;
+  --rule: #c9c6bf;
+  --rule-faint: #e4e1da;
+
+  /* Four accents, desaturated so they read as ink-on-paper rather than UI chrome. */
+  --accent-blue: #2b5f8e;
+  --accent-red: #a33b32;
+  --accent-green: #3d7350;
+  --accent-amber: #a8762c;
+
+  --blue-wash: #2b5f8e18;
+  --red-wash: #a33b3218;
+  --green-wash: #3d735018;
+  --amber-wash: #a8762c18;
+
+  /* TikZ line weights: thin / semithick / thick. */
+  --w-thin: 0.7;
+  --w-semi: 1.1;
+  --w-thick: 1.7;
+
+  --serif: "Latin Modern Roman", "Computer Modern Serif", Palatino, "Palatino Linotype",
+    "Book Antiqua", Georgia, "Times New Roman", serif;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --measure: 68ch;
+
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 6rem;
+}
+
+header.masthead {
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 2rem;
+  margin-bottom: 3rem;
+}
+
+h1 {
+  font-size: 2.2rem;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.4rem;
+}
+
+.subtitle {
+  color: var(--ink-soft);
+  font-size: 1.05rem;
+  margin: 0;
+  max-width: var(--measure);
+}
+
+.masthead .meta {
+  margin-top: 1.2rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.02em;
+}
+
+section.figure {
+  margin: 0 0 4.5rem;
+  scroll-margin-top: 2rem;
+}
+
+.figure > h2 {
+  font-size: 1.35rem;
+  font-weight: 400;
+  margin: 0 0 0.5rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+}
+
+.figure > h2 .num {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.figure > .lede {
+  color: var(--ink-soft);
+  margin: 0 0 1.4rem;
+  max-width: var(--measure);
+}
+
+.stage {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.stage svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Controls read as a caption strip, not a toolbar. */
+.controls {
+  border-top: 1px solid var(--rule-faint);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.controls .group {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.controls .label {
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+button.ctl {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.22rem 0.6rem;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+button.ctl:hover { border-color: var(--ink-faint); background: var(--rule-faint); }
+button.ctl:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+button.ctl[aria-pressed="true"] {
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+  background: var(--red-wash);
+}
+button.ctl[disabled] { opacity: 0.4; cursor: default; }
+
+input[type="range"] {
+  width: 130px;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+
+.readout {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.readout b { color: var(--ink); font-weight: 600; }
+
+.caption {
+  margin: 0.85rem 0 0;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  max-width: var(--measure);
+}
+
+/* SVG primitives shared by every figure. */
+.s-node { fill: none; stroke: var(--ink); stroke-width: var(--w-semi); }
+.s-node-soft { fill: none; stroke: var(--rule); stroke-width: var(--w-thin); }
+.s-wire { fill: none; stroke: var(--rule); stroke-width: var(--w-thin); }
+.s-wire-live { fill: none; stroke: var(--ink-faint); stroke-width: var(--w-semi); }
+.s-label { fill: var(--ink); font-family: var(--serif); font-size: 13px; }
+.s-label-sm { fill: var(--ink-soft); font-family: var(--serif); font-size: 11px; }
+.s-mono { fill: var(--ink-soft); font-family: var(--mono); font-size: 10.5px; }
+.s-dead { stroke: var(--accent-red); }
+.s-muted { opacity: 0.32; }
+
+.pkt { pointer-events: none; }
+
+footer.colophon {
+  border-top: 1px solid var(--rule);
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+}
+footer.colophon a { color: var(--accent-blue); }
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-note { display: block; }
+}
+.motion-note {
+  display: none;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  body { font-size: 16px; }
+  .wrap { padding: 2.5rem 1rem 4rem; }
+  h1 { font-size: 1.7rem; }
+}

@@ -1,0 +1,25 @@
+# Grafana dashboard provisioning.
+# Mounted read-only at /etc/grafana/provisioning/dashboards/dashboards.yml.
+#
+# Every *.json under the options.path directory is loaded into the "nw-lb-go"
+# folder. That directory is deploy/grafana/dashboards on the host.
+
+apiVersion: 1
+
+providers:
+  - name: nw-lb-go
+    orgId: 1
+    folder: nw-lb-go
+    folderUid: nw-lb-go
+    type: file
+    # The provisioned copy is authoritative: deleting a JSON file removes the
+    # dashboard, so the repo and Grafana cannot drift.
+    disableDeletion: false
+    # Edits in the UI are allowed but are overwritten on the next reload. Use
+    # the dashboard's "JSON Model" tab to copy changes back into red.json.
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      # Flat directory, so no folder is derived from the file layout.
+      foldersFromFilesStructure: false

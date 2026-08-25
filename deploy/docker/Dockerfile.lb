@@ -1,0 +1,81 @@
+# Build context is the repository root:
+#   docker build -f deploy/docker/Dockerfile.lb -t nw-lb-go/lb:dev .
+#
+# Two stages. The builder produces a fully static binary; the runtime carries
+# nothing but that binary.
+
+ARG GO_VERSION=1.25
+
+# ---------------------------------------------------------------------------
+# builder
+# ---------------------------------------------------------------------------
+FROM golang:${GO_VERSION}-alpine AS builder
+
+WORKDIR /src
+
+# CGO off is what makes the binary runnable on a distroless *static* base: no
+# libc, no dynamic loader, no /lib in the runtime image at all.
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=local
+
+# Dependency layer. go.mod/go.sum change far less often than the source, so
+# keeping this COPY separate means the module download is reused across every
+# source-only rebuild.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Source layer.
+COPY . .
+
+# VERSION is stamped into main.version. Pass it from CI or compose:
+#   --build-arg VERSION=$(git describe --tags --always --dirty)
+ARG VERSION=dev
+# TARGETOS/TARGETARCH are populated by buildx; the `:-` defaults keep the
+# classic builder (where they are empty) working.
+ARG TARGETOS
+ARG TARGETARCH
+
+# -trimpath strips local filesystem paths from the binary so builds are
+# reproducible; -s -w drop the symbol table and DWARF (~30% smaller).
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-$(go env GOARCH)} \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/lb \
+      ./cmd/lb
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="nw-lb-go load balancer" \
+      org.opencontainers.image.source="https://github.com/hitanshpaliwal/nw-lb-go" \
+      org.opencontainers.image.version="${VERSION}"
+
+# uid/gid 65532, baked into the distroless :nonroot tag.
+USER nonroot:nonroot
+
+COPY --from=builder /out/lb /usr/local/bin/lb
+
+# 8080 = gRPC data plane (config `listen`)
+# 9090 = admin HTTP: /metrics, /healthz, /readyz, /backends, /debug/pprof
+EXPOSE 8080 9090
+
+# No HEALTHCHECK here on purpose.
+#
+# `HEALTHCHECK CMD ...` runs its test *inside* this container, and distroless
+# ships no shell and no HTTP client — there is literally nothing to exec. The
+# same is true of a compose-level `healthcheck:` block, which is the identical
+# mechanism expressed in YAML, so docker-compose.yml deliberately leaves this
+# service without one and documents why. Liveness is observed from outside
+# instead: Prometheus scrapes :9090 (the `up` series is the container-liveness
+# signal) and /readyz reports whether at least one backend is healthy.
+#
+# If you need an in-container probe, swap the runtime base for
+# `alpine:3.21` (add `RUN adduser -D -u 65532 nonroot`) and then:
+#   HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
+#     CMD wget -q -O /dev/null http://127.0.0.1:9090/readyz || exit 1
+
+ENTRYPOINT ["/usr/local/bin/lb"]

@@ -1,0 +1,2295 @@
+<title>nw-lb-go</title>
+<style>/* TikZ-flavoured design tokens.
+ *
+ * The look comes from restraint: hairline strokes, exact geometry, a serif face for labels, and a
+ * palette of four muted accents used sparingly. Everything is a custom property so a diagram never
+ * hard-codes a colour.
+ *
+ * This page is light only, on purpose: it is a technical drawing on paper, and the ink weights and
+ * washes below are tuned for that ground. It therefore paints its own background and declares
+ * color-scheme, so it holds its appearance on a dark host instead of borrowing one. */
+
+:root {
+  --paper: #fdfdfb;
+  --ink: #1c1c1a;
+  --ink-soft: #55534e;
+  --ink-faint: #8a8781;
+  --rule: #c9c6bf;
+  --rule-faint: #e4e1da;
+
+  /* Four accents, desaturated so they read as ink-on-paper rather than UI chrome. */
+  --accent-blue: #2b5f8e;
+  --accent-red: #a33b32;
+  --accent-green: #3d7350;
+  --accent-amber: #a8762c;
+
+  --blue-wash: #2b5f8e18;
+  --red-wash: #a33b3218;
+  --green-wash: #3d735018;
+  --amber-wash: #a8762c18;
+
+  /* TikZ line weights: thin / semithick / thick. */
+  --w-thin: 0.7;
+  --w-semi: 1.1;
+  --w-thick: 1.7;
+
+  --serif: "Latin Modern Roman", "Computer Modern Serif", Palatino, "Palatino Linotype",
+    "Book Antiqua", Georgia, "Times New Roman", serif;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --measure: 68ch;
+
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 6rem;
+}
+
+header.masthead {
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 2rem;
+  margin-bottom: 3rem;
+}
+
+h1 {
+  font-size: 2.2rem;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.4rem;
+}
+
+.subtitle {
+  color: var(--ink-soft);
+  font-size: 1.05rem;
+  margin: 0;
+  max-width: var(--measure);
+}
+
+.masthead .meta {
+  margin-top: 1.2rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.02em;
+}
+
+section.figure {
+  margin: 0 0 4.5rem;
+  scroll-margin-top: 2rem;
+}
+
+.figure > h2 {
+  font-size: 1.35rem;
+  font-weight: 400;
+  margin: 0 0 0.5rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+}
+
+.figure > h2 .num {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.figure > .lede {
+  color: var(--ink-soft);
+  margin: 0 0 1.4rem;
+  max-width: var(--measure);
+}
+
+.stage {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.stage svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Controls read as a caption strip, not a toolbar. */
+.controls {
+  border-top: 1px solid var(--rule-faint);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.controls .group {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.controls .label {
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+button.ctl {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.22rem 0.6rem;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+button.ctl:hover { border-color: var(--ink-faint); background: var(--rule-faint); }
+button.ctl:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+button.ctl[aria-pressed="true"] {
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+  background: var(--red-wash);
+}
+button.ctl[disabled] { opacity: 0.4; cursor: default; }
+
+input[type="range"] {
+  width: 130px;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+
+.readout {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.readout b { color: var(--ink); font-weight: 600; }
+
+.caption {
+  margin: 0.85rem 0 0;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  max-width: var(--measure);
+}
+
+/* SVG primitives shared by every figure. */
+.s-node { fill: none; stroke: var(--ink); stroke-width: var(--w-semi); }
+.s-node-soft { fill: none; stroke: var(--rule); stroke-width: var(--w-thin); }
+.s-wire { fill: none; stroke: var(--rule); stroke-width: var(--w-thin); }
+.s-wire-live { fill: none; stroke: var(--ink-faint); stroke-width: var(--w-semi); }
+.s-label { fill: var(--ink); font-family: var(--serif); font-size: 13px; }
+.s-label-sm { fill: var(--ink-soft); font-family: var(--serif); font-size: 11px; }
+.s-mono { fill: var(--ink-soft); font-family: var(--mono); font-size: 10.5px; }
+.s-dead { stroke: var(--accent-red); }
+.s-muted { opacity: 0.32; }
+
+.pkt { pointer-events: none; }
+
+footer.colophon {
+  border-top: 1px solid var(--rule);
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+}
+footer.colophon a { color: var(--accent-blue); }
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-note { display: block; }
+}
+.motion-note {
+  display: none;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  body { font-size: 16px; }
+  .wrap { padding: 2.5rem 1rem 4rem; }
+  h1 { font-size: 1.7rem; }
+}
+</style>
+<div class="wrap">
+
+<header class="masthead">
+  <h1>nw-lb-go</h1>
+  <p class="subtitle">
+    A layer 7 gRPC load balancer in Go. Three things about it were worth drawing.
+    The figures run the real routing code, so what you see is what it does.
+  </p>
+  <p class="meta">Go 1.25 · grpc-go 1.83 · p99 under 200 ms to 50k rps</p>
+  <p class="motion-note">Reduced motion is on, so packets move sparingly. The controls still work.</p>
+</header>
+
+<main id="figures"></main>
+
+</div>
+<script>/* Shared foundation for every figure: SVG construction, one animation clock, packet motion along
+ * real paths, and a consistent-hash ring that behaves like the Go one so the routing figures agree
+ * with the system they document. No dependencies. */
+(function (global) {
+  "use strict";
+
+  const SVGNS = "http://www.w3.org/2000/svg";
+
+  /* ---------------------------------------------------------------- construction */
+
+  // el("circle", {r: 4, class: "pkt"}, [children]) — attribute names are passed through verbatim,
+  // so hyphenated SVG attributes work without translation.
+  function el(name, attrs, children) {
+    const node = document.createElementNS(SVGNS, name);
+    if (attrs) {
+      for (const k in attrs) {
+        const v = attrs[k];
+        if (v === null || v === undefined || v === false) continue;
+        if (k === "text") node.textContent = String(v);
+        else node.setAttribute(k, String(v));
+      }
+    }
+    if (children) for (const c of children) if (c) node.appendChild(c);
+    return node;
+  }
+
+  function html(name, attrs, children) {
+    const node = document.createElement(name);
+    if (attrs) {
+      for (const k in attrs) {
+        const v = attrs[k];
+        if (v === null || v === undefined || v === false) continue;
+        if (k === "text") node.textContent = String(v);
+        else if (k === "class") node.className = String(v);
+        else node.setAttribute(k, String(v));
+      }
+    }
+    if (children) for (const c of children) if (c) node.appendChild(c);
+    return node;
+  }
+
+  // Every figure shares one arrowhead vocabulary so the drawings look like one document. The
+  // geometry is a slim stealth head; markers inherit stroke colour via context-stroke where the
+  // browser supports it and fall back to currentColor otherwise.
+  function defs() {
+    const mk = (id, color) =>
+      el("marker", {
+        id: id, viewBox: "0 0 10 8", refX: 9.2, refY: 4,
+        markerWidth: 7, markerHeight: 6, orient: "auto-start-reverse",
+      }, [el("path", { d: "M0,0 L10,4 L0,8 L2.6,4 Z", fill: color })]);
+
+    return el("defs", null, [
+      mk("ah", "context-stroke"),
+      mk("ah-ink", "var(--ink)"),
+      mk("ah-faint", "var(--ink-faint)"),
+      mk("ah-blue", "var(--accent-blue)"),
+      mk("ah-red", "var(--accent-red)"),
+      mk("ah-green", "var(--accent-green)"),
+    ]);
+  }
+
+  // A figure's root <svg>. Width is fluid; the viewBox fixes the coordinate system so every
+  // diagram can be authored in absolute units and still be responsive.
+  function stage(w, h, label) {
+    const s = el("svg", {
+      viewBox: `0 0 ${w} ${h}`,
+      role: "img",
+      "aria-label": label || "",
+      preserveAspectRatio: "xMidYMid meet",
+    }, [defs()]);
+    return s;
+  }
+
+  function text(x, y, str, cls, extra) {
+    return el("text", Object.assign({ x: x, y: y, class: cls || "s-label", text: str }, extra || {}));
+  }
+
+  // A TikZ-ish node: thin rounded rect with a centred label. Returns {g, cx, cy, w, h}.
+  function box(x, y, w, h, label, opts) {
+    const o = opts || {};
+    const g = el("g", { class: o.class || "" });
+    g.appendChild(el("rect", {
+      x: x, y: y, width: w, height: h, rx: o.rx === undefined ? 3 : o.rx,
+      class: o.boxClass || "s-node", fill: o.fill || "none",
+    }));
+    if (label) {
+      g.appendChild(text(x + w / 2, y + h / 2 + 4.5, label, o.labelClass || "s-label", {
+        "text-anchor": "middle",
+      }));
+    }
+    return { g: g, x: x, y: y, w: w, h: h, cx: x + w / 2, cy: y + h / 2 };
+  }
+
+  /* ------------------------------------------------------------------- the clock */
+
+  const reduced = global.matchMedia
+    ? global.matchMedia("(prefers-reduced-motion: reduce)").matches
+    : false;
+
+  // One requestAnimationFrame loop drives every figure. Figures register a step(dt) and are only
+  // stepped while their container is on screen, so a page of six simulations costs about as much
+  // as the one you are looking at.
+  const Ticker = (function () {
+    const subs = new Set();
+    let last = 0, running = false;
+
+    function frame(now) {
+      if (!running) return;
+      const dt = last ? Math.min((now - last) / 1000, 0.1) : 0;
+      last = now;
+      for (const s of subs) {
+        if (!s.visible) continue;
+        try { s.step(dt); } catch (err) { /* one bad figure must not stop the page */ }
+      }
+      global.requestAnimationFrame(frame);
+    }
+
+    function start() {
+      if (running) return;
+      running = true; last = 0;
+      global.requestAnimationFrame(frame);
+    }
+
+    return {
+      add(step, node) {
+        const sub = { step: step, visible: true };
+        subs.add(sub);
+        if (node && global.IntersectionObserver) {
+          sub.visible = false;
+          const io = new IntersectionObserver((entries) => {
+            for (const e of entries) sub.visible = e.isIntersecting;
+          }, { rootMargin: "80px" });
+          io.observe(node);
+        }
+        start();
+        return () => subs.delete(sub);
+      },
+      get reduced() { return reduced; },
+    };
+  })();
+
+  /* ------------------------------------------------------------------- packets */
+
+  // Packets travel along the very path element that draws the wire, so a dot can never drift off
+  // its line: the geometry has exactly one source of truth.
+  function Flight(pathEl, opts) {
+    const o = opts || {};
+    this.path = pathEl;
+    this.len = pathEl.getTotalLength();
+    this.speed = o.speed || 160;      // user units per second
+    this.dist = o.from || 0;
+    this.done = false;
+    this.node = o.node;
+    this.onArrive = o.onArrive || null;
+  }
+  Flight.prototype.step = function (dt) {
+    if (this.done) return;
+    this.dist += this.speed * dt;
+    if (this.dist >= this.len) {
+      this.dist = this.len;
+      this.done = true;
+    }
+    const p = this.path.getPointAtLength(this.dist);
+    if (this.node) {
+      this.node.setAttribute("cx", p.x.toFixed(2));
+      this.node.setAttribute("cy", p.y.toFixed(2));
+    }
+    if (this.done && this.onArrive) this.onArrive();
+    return p;
+  };
+
+  // A pool keeps packet circles alive rather than churning DOM nodes at 60fps.
+  function PacketPool(layer, opts) {
+    this.layer = layer;
+    this.free = [];
+    this.live = [];
+    this.r = (opts && opts.r) || 3;
+  }
+  PacketPool.prototype.spawn = function (pathEl, opts) {
+    const o = opts || {};
+    let node = this.free.pop();
+    if (!node) {
+      node = el("circle", { r: this.r, class: "pkt" });
+      this.layer.appendChild(node);
+    }
+    node.setAttribute("r", o.r || this.r);
+    node.setAttribute("fill", o.fill || "var(--accent-blue)");
+    node.setAttribute("opacity", o.opacity === undefined ? 1 : o.opacity);
+    node.style.display = "";
+    const self = this;
+    const f = new Flight(pathEl, {
+      speed: o.speed, from: o.from, node: node,
+      onArrive: function () {
+        if (o.onArrive) o.onArrive();
+      },
+    });
+    f._node = node;
+    this.live.push(f);
+    return f;
+  };
+  PacketPool.prototype.step = function (dt) {
+    for (let i = this.live.length - 1; i >= 0; i--) {
+      const f = this.live[i];
+      f.step(dt);
+      if (f.done) {
+        f._node.style.display = "none";
+        this.free.push(f._node);
+        this.live.splice(i, 1);
+      }
+    }
+  };
+  PacketPool.prototype.clear = function () {
+    for (const f of this.live) {
+      f._node.style.display = "none";
+      this.free.push(f._node);
+    }
+    this.live.length = 0;
+  };
+
+  /* --------------------------------------------------------------------- model */
+
+  // FNV-1a followed by MurmurHash3's finaliser. Not the xxhash the Go side uses — the point is a
+  // well-distributed 32-bit hash so the ring behaves the same way, not that the two agree on
+  // placements.
+  //
+  // The avalanche step is not optional. FNV alone barely mixes its high bits for inputs that differ
+  // only in a trailing index, which is exactly the shape of a virtual node key ("backend-1#0",
+  // "backend-1#1", ...). Without it, 84 virtual nodes landed in clumps that left a single 22.4% hole
+  // in the ring and gave one backend 52% of the keys — a drawing that would have argued against the
+  // very property it exists to demonstrate. With it the largest gap is 7.1% and the split is
+  // 42/26/32, whose remaining skew is the honest small-sample behaviour of 28 virtual nodes per
+  // member rather than an artefact of the hash.
+  function hash32(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35) >>> 0;
+    h ^= h >>> 16;
+    return h >>> 0;
+  }
+
+  // Consistent hash ring with weighted virtual nodes, mirroring internal/hashring.
+  //
+  // The property worth preserving here is the one the Go tests assert: membership is the set of
+  // CONFIGURED members and never changes with health. Health is a filter applied over the ordered
+  // candidate list, so a backend going down remaps only the keys it owned.
+  function Ring(members, vnodes) {
+    this.vnodes = vnodes || 60;
+    this.setMembers(members || []);
+  }
+  Ring.prototype.setMembers = function (members) {
+    this.members = members.slice();
+    const pts = [];
+    for (const m of this.members) {
+      const n = Math.max(1, Math.round((this.vnodes * (m.weight || 100)) / 100));
+      for (let i = 0; i < n; i++) pts.push({ h: hash32(m.id + "#" + i), id: m.id });
+    }
+    // Sort on (hash, id) so identical membership always yields an identical ring regardless of
+    // insertion order — the determinism the Go tests check.
+    pts.sort((a, b) => (a.h - b.h) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    this.points = pts;
+  };
+  Ring.prototype.indexFor = function (key) {
+    const h = hash32(key);
+    const pts = this.points;
+    if (!pts.length) return -1;
+    let lo = 0, hi = pts.length - 1, ans = 0, found = false;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid].h >= h) { ans = mid; found = true; hi = mid - 1; } else lo = mid + 1;
+    }
+    return found ? ans : 0; // wrap
+  };
+  // Ordered distinct owners, primary first — the preference list the balancer filters.
+  Ring.prototype.candidates = function (key, n) {
+    const pts = this.points;
+    if (!pts.length) return [];
+    const start = this.indexFor(key);
+    const out = [];
+    for (let i = 0; i < pts.length && out.length < (n || pts.length); i++) {
+      const id = pts[(start + i) % pts.length].id;
+      if (out.indexOf(id) === -1) out.push(id);
+    }
+    return out;
+  };
+  // Route applies the health/breaker filter over ring order, with the fail-open ladder the Go
+  // balancer uses: available, then healthy, then anything.
+  Ring.prototype.route = function (key, isAvailable) {
+    const cands = this.candidates(key);
+    for (const id of cands) if (isAvailable(id)) return id;
+    return cands.length ? cands[0] : null;
+  };
+
+  // Deterministic PRNG so a reload tells the same story.
+  function rng(seed) {
+    let s = seed >>> 0 || 1;
+    return function () {
+      s ^= s << 13; s >>>= 0;
+      s ^= s >> 17;
+      s ^= s << 5; s >>>= 0;
+      return s / 4294967296;
+    };
+  }
+
+  /* -------------------------------------------------------------------- controls */
+
+  function button(label, onClick, opts) {
+    const o = opts || {};
+    const b = html("button", { class: "ctl", type: "button", text: label });
+    if (o.pressed !== undefined) b.setAttribute("aria-pressed", String(!!o.pressed));
+    b.addEventListener("click", () => onClick(b));
+    return b;
+  }
+
+  function slider(opts) {
+    const o = opts || {};
+    const input = html("input", {
+      type: "range", min: o.min, max: o.max, step: o.step || 1, value: o.value,
+      "aria-label": o.label || "value",
+    });
+    input.addEventListener("input", () => o.onInput(Number(input.value), input));
+    return input;
+  }
+
+  function readout(initial) {
+    const n = html("span", { class: "readout" });
+    n.innerHTML = initial || "";
+    return n;
+  }
+
+  function group(children) {
+    return html("div", { class: "group" }, children);
+  }
+
+  function label(str) {
+    return html("span", { class: "label", text: str });
+  }
+
+  /* --------------------------------------------------------------------- figures */
+
+  const registry = [];
+
+  function register(fig) { registry.push(fig); }
+
+  function mountAll(root) {
+    registry.forEach((fig, i) => {
+      const section = html("section", { class: "figure", id: fig.id });
+      const h = html("h2", null, [
+        html("span", { class: "num", text: "Fig. " + (i + 1) }),
+        document.createTextNode(fig.title),
+      ]);
+      section.appendChild(h);
+      if (fig.lede) section.appendChild(html("p", { class: "lede", text: fig.lede }));
+
+      const stageEl = html("div", { class: "stage" });
+      const controls = html("div", { class: "controls" });
+      section.appendChild(stageEl);
+      root.appendChild(section);
+
+      let api = null;
+      try {
+        api = fig.mount(stageEl, controls, API);
+      } catch (err) {
+        stageEl.appendChild(html("p", { class: "caption", text: "This figure failed to load." }));
+        if (global.console) console.error("figure " + fig.id + " failed:", err);
+      }
+      if (controls.childNodes.length) stageEl.appendChild(controls);
+
+      if (fig.caption) section.appendChild(html("p", { class: "caption", text: fig.caption }));
+      if (api && api.step) Ticker.add(api.step, stageEl);
+    });
+  }
+
+  const API = {
+    el: el, html: html, stage: stage, text: text, box: box, defs: defs,
+    Ticker: Ticker, Flight: Flight, PacketPool: PacketPool,
+    Ring: Ring, hash32: hash32, rng: rng,
+    button: button, slider: slider, readout: readout, group: group, label: label,
+    register: register, mountAll: mountAll,
+    reduced: reduced,
+    SVGNS: SVGNS,
+  };
+
+  global.NWLB = API;
+})(window);
+
+
+/* ---- ring ---- */
+/* Fig. ring — the consistent hash ring under failure.
+ *
+ * The whole argument of the figure is a comparison: killing a backend under consistent hashing
+ * moves only the keys that backend owned, and killing the same backend under hash(key) % N moves
+ * nearly everything. Both modes are computed from the same 48 keys and the same X.Ring, so the
+ * contrast is measured on screen rather than asserted. */
+NWLB.register({
+  id: "ring",
+  title: 'Consistent hashing',
+  lede:
+    'Kill a backend. Only the keys it owned move.',
+  caption:
+    'Each dot is a session key, coloured by the backend that answers it. Turn on modulo hashing and kill the same backend to see what the usual approach costs.',
+
+  mount: function (stageEl, controlsEl, X) {
+    /* ------------------------------------------------------------------ geometry */
+    var W = 880, H = 452;
+    var CX = 290, CY = 240;
+    var R = 156;            // the ring proper
+    var RK = 140;           // key dots, just inside it
+    var R_BAND = R + 5.5;   // ownership band
+    var R_T0 = R + 9.5, R_T1 = R + 18;   // virtual-node comb
+    var TAU = Math.PI * 2;
+    var VNODES = 28;        // per backend, weight 100
+    var NKEYS = 48;
+    var DOT_R = 2.6;        // key dot; adjacent dots are 6.66 units apart
+
+    var PX0 = 520, PX1 = 856;            // right-hand panel
+    var ROW_Y = [96, 144, 192];
+    var GRID_X = 520, GRID_Y = 274, CELL = 11, PITCH = 15, COLS = 8;
+
+    var BE = [
+      { id: "backend-1", col: "var(--accent-blue)", wash: "var(--blue-wash)" },
+      { id: "backend-2", col: "var(--accent-green)", wash: "var(--green-wash)" },
+      { id: "backend-3", col: "var(--accent-amber)", wash: "var(--amber-wash)" }
+    ];
+    var DEAD = "var(--accent-red)";
+    var FAINT = "var(--ink-faint)";
+    var RULE = "var(--rule)";
+    var THIN = "var(--w-thin)";
+
+    var live = [true, true, true];
+    var modulo = false;
+
+    /* --------------------------------------------------------------------- model */
+    // Membership is every configured backend — exactly as in internal/hashring. Health never
+    // rebuilds the ring; it only filters the ordered candidates below.
+    var ring = new X.Ring(
+      BE.map(function (b) { return { id: b.id, weight: 100 }; }),
+      VNODES
+    );
+    var pts = ring.points;
+    var idxOf = {};
+    BE.forEach(function (b, i) { idxOf[b.id] = i; });
+
+    function px(a, r) { return CX + r * Math.cos(a); }
+    function py(a, r) { return CY + r * Math.sin(a); }
+    function f2(n) { return n.toFixed(2); }
+
+    // Clockwise arc (screen clockwise = increasing angle, since y grows downwards).
+    function arcD(a0, a1, r) {
+      var d = a1 - a0;
+      if (d <= 0) d += TAU;
+      var large = d > Math.PI ? 1 : 0;
+      return "M" + f2(px(a0, r)) + " " + f2(py(a0, r)) +
+        " A" + r + " " + r + " 0 " + large + " 1 " + f2(px(a1, r)) + " " + f2(py(a1, r));
+    }
+    function arcSpan(a0, a1) {
+      var d = a1 - a0;
+      if (d <= 0) d += TAU;
+      return d;
+    }
+
+    function liveCount() {
+      var n = 0;
+      for (var i = 0; i < 3; i++) if (live[i]) n++;
+      return n;
+    }
+
+    // The clockwise scan: first live virtual node at or after the key's position. Falls back to the
+    // raw ring owner when nothing is live, which is the balancer's fail-open ladder.
+    function effOwnerFrom(start) {
+      var n = pts.length;
+      for (var i = 0; i < n; i++) {
+        var j = (start + i) % n;
+        var bi = idxOf[pts[j].id];
+        if (live[bi]) return { bi: bi, pi: j };
+      }
+      return { bi: idxOf[pts[start].id], pi: start };
+    }
+
+    function ownerOf(k) {
+      var start = ring.indexFor(k.id);
+      if (!modulo) return effOwnerFrom(start);
+      // hash(key) % live — ring position is not consulted at all.
+      var lc = liveCount();
+      var bi;
+      if (lc === 0) {
+        bi = k.h % 3;
+      } else {
+        var order = [];
+        for (var i = 0; i < 3; i++) if (live[i]) order.push(i);
+        bi = order[k.h % lc];
+      }
+      // Purely a visual anchor: the nearest virtual node of the chosen backend, so a remapped dot
+      // has somewhere on the ring to fly to.
+      var pi = start;
+      for (var j = 0; j < pts.length; j++) {
+        var q = (start + j) % pts.length;
+        if (idxOf[pts[q].id] === bi) { pi = q; break; }
+      }
+      return { bi: bi, pi: pi };
+    }
+
+    // Session keys, drawn deterministically, then thinned by two rules: at most one key per virtual
+    // node arc, and a per-backend cap that starts the three roughly even. Both are there because
+    // core.js's 32-bit FNV variant hashes "id#i" into a few enormous arcs; sampled raw, one backend
+    // takes half the keys in one contiguous block, which is the behaviour of a ring WITHOUT virtual
+    // nodes and the opposite of what this figure is about. The Go ring — xxhash, 200 virtual nodes —
+    // interleaves, and measured 26/28/35 per cent across three backends. Routing is never faked:
+    // every owner below comes out of the real ring.
+    var QUOTA = [17, 16, 15];
+    var rnd = X.rng(0x5eed1a);
+    var HEX = "0123456789abcdef";
+    var keys = [];
+    var taken = [0, 0, 0];
+    var usedArc = {};
+    var seen = {};
+    var guard = 0;
+    while (keys.length < NKEYS && guard < 40000) {
+      guard++;
+      var s = "sess-";
+      for (var q = 0; q < 4; q++) s += HEX[Math.floor(rnd() * 16)];
+      if (seen[s]) continue;
+      var arc = ring.indexFor(s);
+      if (usedArc[arc]) continue;
+      var bi0 = effOwnerFrom(arc).bi;
+      if (taken[bi0] >= QUOTA[bi0]) continue;
+      seen[s] = 1;
+      usedArc[arc] = 1;
+      taken[bi0]++;
+      keys.push({ id: s, h: X.hash32(s), ang: 0, owner: 0, remapped: false, inFlight: false });
+    }
+
+    // Positions are drawn in rank order: every virtual node and every key takes an equal slice of
+    // the circle, in hash order, keys ahead of the node that owns them. A monotone reparametrisation
+    // preserves every ordering this figure argues about — who follows whom clockwise — while
+    // keeping the comb even and the dots apart.
+    var items = [];
+    var i;
+    for (i = 0; i < pts.length; i++) items.push({ h: pts[i].h, k: 0, i: i });
+    for (i = 0; i < keys.length; i++) items.push({ h: keys[i].h, k: 1, i: i });
+    items.sort(function (a, b) { return (a.h - b.h) || (b.k - a.k); });
+
+    var SLOT = TAU / items.length;
+    var pointAng = new Array(pts.length);
+    for (i = 0; i < items.length; i++) {
+      var slotAng = -Math.PI / 2 + (i + 0.5) * SLOT;
+      if (items[i].k) keys[items[i].i].ang = slotAng;
+      else pointAng[items[i].i] = slotAng;
+    }
+    keys.sort(function (a, b) { return a.ang - b.ang; });
+
+    /* ---------------------------------------------------------------------- stage */
+    var svg = X.stage(W, H,
+      "A consistent hash ring. Ticks around the circle are virtual nodes coloured by backend, " +
+      "forty-eight session key dots sit inside it in the colour of their current owner, and a panel " +
+      "on the right counts the keys each backend holds and marks the keys remapped by the last " +
+      "change. Killing a backend moves only the keys it owned; switching to modulo hashing moves " +
+      "nearly all of them.");
+    stageEl.appendChild(svg);
+
+    var gRing = X.el("g"), gBand = X.el("g"), gTicks = X.el("g"), gCentre = X.el("g");
+    var gLead = X.el("g"), gArcs = X.el("g"), gDots = X.el("g"), gPkt = X.el("g");
+    var gPanel = X.el("g");
+    [gRing, gBand, gTicks, gCentre, gLead, gArcs, gDots, gPkt, gPanel].forEach(function (g) {
+      svg.appendChild(g);
+    });
+
+    gRing.appendChild(X.el("circle", { cx: CX, cy: CY, r: R, class: "s-node-soft" }));
+    // Origin of the hash space, at twelve o'clock.
+    gRing.appendChild(X.el("line", {
+      x1: CX, y1: CY - R - 18, x2: CX, y2: CY - R - 27, class: "s-node"
+    }));
+    gRing.appendChild(X.text(CX, CY - R - 33, "0 / 2³²", "s-mono", { "text-anchor": "middle" }));
+    gRing.appendChild(X.el("path", {
+      d: arcD(-1.16, -0.74, R + 30), fill: "none", stroke: FAINT,
+      "stroke-width": THIN, "marker-end": "url(#ah-faint)"
+    }));
+    gRing.appendChild(X.text(444, 128, "clockwise", "s-label-sm"));
+
+    // Ownership band: one arc per virtual node, spanning from the previous node to this one. The
+    // geometry is fixed for the life of the figure because ring membership never changes — only the
+    // colour moves, when a dead node's arc is absorbed by the next live one.
+    var bandPaths = [];
+    for (i = 0; i < pts.length; i++) {
+      var a0 = pointAng[(i - 1 + pts.length) % pts.length];
+      var a1 = pointAng[i];
+      var span = arcSpan(a0, a1);
+      if (span <= 0.004 || span >= TAU - 0.004) { bandPaths.push(null); continue; }
+      var bp = X.el("path", {
+        d: arcD(a0, a1, R_BAND), fill: "none", "stroke-width": 3.6,
+        "stroke-linecap": "butt", opacity: 0.55
+      });
+      gBand.appendChild(bp);
+      bandPaths.push(bp);
+    }
+
+    // Virtual-node comb.
+    var tickEls = [];
+    for (i = 0; i < pts.length; i++) {
+      var ta = pointAng[i];
+      var tick = X.el("line", {
+        x1: f2(px(ta, R_T0)), y1: f2(py(ta, R_T0)),
+        x2: f2(px(ta, R_T1)), y2: f2(py(ta, R_T1)),
+        "stroke-width": THIN
+      });
+      gTicks.appendChild(tick);
+      tickEls.push(tick);
+    }
+
+    // Key dots and their leaders out to the arc that owns them.
+    for (i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      k.x = px(k.ang, RK);
+      k.y = py(k.ang, RK);
+      k.lead = X.el("line", {
+        x1: f2(px(k.ang, RK + 4)), y1: f2(py(k.ang, RK + 4)),
+        x2: f2(px(k.ang, R + 1)), y2: f2(py(k.ang, R + 1)),
+        "stroke-width": THIN
+      });
+      k.dot = X.el("circle", { cx: f2(k.x), cy: f2(k.y), r: DOT_R, "stroke-width": THIN });
+      gLead.appendChild(k.lead);
+      gDots.appendChild(k.dot);
+    }
+
+    var centre1 = X.text(CX, CY - 4, "consistent hash ring", "s-label", { "text-anchor": "middle" });
+    var centre2 = X.text(CX, CY + 15, "", "s-mono", { "text-anchor": "middle" });
+    var centre3 = X.text(CX, CY + 33, "", "s-mono", {
+      "text-anchor": "middle", style: "fill: var(--accent-amber)"
+    });
+    var ruleLine = X.text(CX, 436, "", "s-label-sm", { "text-anchor": "middle" });
+    gCentre.appendChild(centre1);
+    gCentre.appendChild(centre2);
+    gCentre.appendChild(centre3);
+    gCentre.appendChild(ruleLine);
+
+    var ambLabel = X.text(0, 0, "", "s-mono", { "text-anchor": "middle", opacity: 0 });
+    gCentre.appendChild(ambLabel);
+
+    /* ---------------------------------------------------------------------- panel */
+    var STYLE_FAINT = "fill: var(--ink-faint)";
+    gPanel.appendChild(X.text(PX0, 66, "backends", "s-mono", { style: STYLE_FAINT }));
+    gPanel.appendChild(X.text(PX1, 66, "48 session keys", "s-mono", {
+      style: STYLE_FAINT, "text-anchor": "end"
+    }));
+
+    var rows = [];
+    for (i = 0; i < 3; i++) {
+      var y = ROW_Y[i];
+      var rg = X.el("g");
+      rg.appendChild(X.el("rect", {
+        x: PX0, y: y - 13, width: 10, height: 10, rx: 1,
+        fill: BE[i].wash, stroke: BE[i].col, "stroke-width": "var(--w-semi)"
+      }));
+      var idT = X.text(PX0 + 20, y - 4, BE[i].id, "s-mono", {
+        style: "font-size: 12px; fill: " + BE[i].col
+      });
+      var noteT = X.text(PX0 + 120, y - 4, "", "s-mono", { style: STYLE_FAINT });
+      var cntT = X.text(PX1, y - 4, "", "s-mono", {
+        "text-anchor": "end", style: "fill: var(--ink)"
+      });
+      rg.appendChild(idT);
+      rg.appendChild(noteT);
+      rg.appendChild(cntT);
+      rg.appendChild(X.el("line", {
+        x1: PX0 + 20, y1: y + 8, x2: PX1, y2: y + 8,
+        stroke: "var(--rule-faint)", "stroke-width": 3
+      }));
+      var bar = X.el("line", {
+        x1: PX0 + 20, y1: y + 8, x2: PX0 + 20, y2: y + 8,
+        stroke: BE[i].col, "stroke-width": 3, opacity: 0.75
+      });
+      rg.appendChild(bar);
+      gPanel.appendChild(rg);
+
+      var strike = X.el("line", {
+        x1: PX0 + 18, y1: y - 8, x2: PX0 + 96, y2: y - 8,
+        stroke: DEAD, "stroke-width": THIN, display: "none"
+      });
+      gPanel.appendChild(strike);
+      rows.push({ g: rg, id: idT, note: noteT, cnt: cntT, bar: bar, strike: strike });
+    }
+
+    gPanel.appendChild(X.text(GRID_X, 262, "remapped by the last change", "s-mono", {
+      style: STYLE_FAINT
+    }));
+    var cells = [];
+    for (i = 0; i < NKEYS; i++) {
+      var cx0 = GRID_X + (i % COLS) * PITCH;
+      var cy0 = GRID_Y + Math.floor(i / COLS) * PITCH;
+      var cell = X.el("rect", {
+        x: cx0, y: cy0, width: CELL, height: CELL, rx: 1,
+        fill: "none", stroke: RULE, "stroke-width": THIN
+      });
+      gPanel.appendChild(cell);
+      cells.push(cell);
+    }
+
+    var bigT = X.text(672, 302, "0 / 48", "s-mono", {
+      style: "font-size: 19px; fill: var(--ink)"
+    });
+    var bigSub = X.text(672, 321, "keys remapped", "s-label-sm");
+    var bigUnt = X.text(672, 341, "48 untouched", "s-mono", { style: STYLE_FAINT });
+    gPanel.appendChild(bigT);
+    gPanel.appendChild(bigSub);
+    gPanel.appendChild(bigUnt);
+
+    /* ------------------------------------------------------------------- painting */
+    function paintKey(k) {
+      var c = BE[k.owner].col;
+      k.dot.setAttribute("fill", c);
+      k.dot.setAttribute("stroke", "none");
+      k.dot.setAttribute("r", DOT_R);
+      k.lead.setAttribute("stroke", c);
+      k.lead.setAttribute("opacity", 0.7);
+    }
+    function holdKey(k) {
+      k.dot.setAttribute("fill", "none");
+      k.dot.setAttribute("stroke", FAINT);
+      k.dot.setAttribute("r", DOT_R);
+      k.lead.setAttribute("stroke", RULE);
+      k.lead.setAttribute("opacity", 0.45);
+    }
+
+    function updateRing() {
+      for (var i = 0; i < pts.length; i++) {
+        var bi = idxOf[pts[i].id];
+        tickEls[i].setAttribute("stroke", live[bi] ? BE[bi].col : DEAD);
+        tickEls[i].setAttribute("opacity", live[bi] ? 0.95 : 0.85);
+        var bp = bandPaths[i];
+        if (bp) bp.setAttribute("stroke", BE[effOwnerFrom(i).bi].col);
+      }
+      gBand.setAttribute("opacity", modulo ? 0.14 : 1);
+      gTicks.setAttribute("opacity", modulo ? 0.18 : 1);
+    }
+
+    function updatePanel(moved) {
+      var counts = [0, 0, 0];
+      for (var i = 0; i < keys.length; i++) counts[keys[i].owner]++;
+      var order = [];
+      for (i = 0; i < 3; i++) if (live[i]) order.push(i);
+
+      for (i = 0; i < 3; i++) {
+        var r = rows[i];
+        r.g.setAttribute("opacity", live[i] ? 1 : 0.42);
+        r.id.style.fill = live[i] ? BE[i].col : DEAD;
+        r.strike.setAttribute("display", live[i] ? "none" : "");
+        r.cnt.textContent = counts[i] + (counts[i] === 1 ? " key" : " keys");
+        r.bar.setAttribute("x2", f2(PX0 + 20 + (counts[i] / NKEYS) * (PX1 - PX0 - 20)));
+        if (modulo) {
+          var pos = order.indexOf(i);
+          r.note.textContent = live[i] ? "index " + pos : "removed";
+        } else {
+          r.note.textContent = live[i] ? VNODES + " vnodes" : "vnodes skipped";
+        }
+      }
+
+      for (i = 0; i < keys.length; i++) {
+        var c = cells[i];
+        if (keys[i].remapped) {
+          c.setAttribute("fill", DEAD);
+          c.setAttribute("fill-opacity", 0.5);
+          c.setAttribute("stroke", DEAD);
+        } else {
+          c.setAttribute("fill", "none");
+          c.setAttribute("stroke", RULE);
+        }
+      }
+
+      var pct = Math.round((moved / NKEYS) * 100);
+      bigT.textContent = moved + " / " + NKEYS;
+      bigT.style.fill = moved > NKEYS / 2 ? DEAD : "var(--ink)";
+      bigSub.textContent = "keys remapped (" + pct + "%)";
+      bigUnt.textContent = (NKEYS - moved) + " untouched";
+      ro.innerHTML = "keys remapped: <b>" + moved + "</b> of " + NKEYS + " (" + pct +
+        "%) &middot; untouched: <b>" + (NKEYS - moved) + "</b>";
+    }
+
+    function updateMode() {
+      var lc = liveCount();
+      if (modulo) {
+        centre1.textContent = "modulo hashing";
+        centre2.textContent = lc === 0
+          ? "hash(key) mod 3 configured"
+          : "hash(key) mod " + lc + " live";
+        ruleLine.textContent = "the ring is not consulted: the slots renumber on every failure";
+      } else {
+        centre1.textContent = "consistent hash ring";
+        centre2.textContent = pts.length + " virtual nodes · 3 backends";
+      }
+      centre3.textContent = lc === 0 ? "no healthy backend → fail open" : "";
+    }
+
+    /* ------------------------------------------------------------------- movement */
+    var pool = new X.PacketPool(gPkt, { r: 3 });
+    var arcFree = [], arcUsed = [];
+    var busy = 0;
+
+    function takeArc(stroke, op) {
+      var p = arcFree.pop();
+      if (!p) {
+        p = X.el("path", { fill: "none", "stroke-width": THIN });
+        gArcs.appendChild(p);
+      }
+      p.style.display = "";
+      p.setAttribute("stroke", stroke);
+      p.setAttribute("opacity", op);
+      arcUsed.push(p);
+      return p;
+    }
+    function releaseArc(p) {
+      p.style.display = "none";
+      var i = arcUsed.indexOf(p);
+      if (i >= 0) arcUsed.splice(i, 1);
+      arcFree.push(p);
+    }
+    function releaseAllArcs() {
+      for (var i = arcUsed.length - 1; i >= 0; i--) {
+        arcUsed[i].style.display = "none";
+        arcFree.push(arcUsed[i]);
+      }
+      arcUsed.length = 0;
+    }
+
+    var pulse = null;
+    function stopAll() {
+      pool.clear();
+      releaseAllArcs();
+      busy = 0;
+      ambHide = -1;
+      ambLabel.setAttribute("opacity", 0);
+      if (pulse) { pulse.k.dot.setAttribute("r", DOT_R); pulse = null; }
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].inFlight) { keys[i].inFlight = false; paintKey(keys[i]); }
+      }
+    }
+
+    // A remap: the dot's ownership walks clockwise along the ring to the virtual node that has just
+    // taken it over. Every key that did not change owner is never touched.
+    function fly(k, o) {
+      var a1 = pointAng[o.pi];
+      var span = arcSpan(k.ang, a1);
+      if (span < 0.02) { paintKey(k); return; }
+      k.inFlight = true;
+      holdKey(k);
+      var p = takeArc(BE[o.bi].col, 0.5);
+      p.setAttribute("d", arcD(k.ang, a1, RK));
+      var len = p.getTotalLength();
+      busy++;
+      pool.spawn(p, {
+        speed: Math.max(24, len / 0.85),
+        fill: BE[o.bi].col,
+        r: 3.2,
+        onArrive: function () {
+          releaseArc(p);
+          k.inFlight = false;
+          paintKey(k);
+          if (busy > 0) busy--;
+        }
+      }).step(0);   // place it on the path now, so a recycled dot never flashes at its old position
+    }
+
+    function apply(silent) {
+      stopAll();
+      var moved = 0;
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        var o = ownerOf(k);
+        if (silent) {
+          k.owner = o.bi;
+          k.remapped = false;
+          paintKey(k);
+          continue;
+        }
+        if (o.bi !== k.owner) {
+          k.owner = o.bi;
+          k.remapped = true;
+          moved++;
+          fly(k, o);
+        } else {
+          k.remapped = false;
+        }
+      }
+      updateRing();
+      updateMode();
+      updatePanel(moved);
+    }
+
+    /* ------------------------------------------------------------------- controls */
+    var ro = X.readout("");
+
+    var killBtns = BE.map(function (b, i) {
+      return X.button("kill " + b.id, function (btn) {
+        live[i] = !live[i];
+        btn.textContent = (live[i] ? "kill " : "restore ") + b.id;
+        btn.setAttribute("aria-pressed", String(!live[i]));
+        apply(false);
+      }, { pressed: false });
+    });
+
+    var modBtn = X.button("modulo hashing", function (btn) {
+      modulo = !modulo;
+      btn.setAttribute("aria-pressed", String(modulo));
+      apply(false);
+    }, { pressed: false });
+
+    controlsEl.appendChild(X.group([X.label("failure")].concat(killBtns)));
+    controlsEl.appendChild(X.group([X.label("routing"), modBtn]));
+    controlsEl.appendChild(ro);
+
+    /* ----------------------------------------------------------------------- loop */
+    var clock = 0, since = 0, ambHide = -1, ambIdx = 0;
+    var period = X.reduced ? 4.5 : 1.15;
+
+    // Ambient traffic: one key at a time is looked up, so the clockwise scan is always on show.
+    function ambient() {
+      var k = keys[ambIdx % keys.length];
+      ambIdx++;
+      if (k.inFlight) return;
+      pulse = { k: k, t: 0 };
+      ambLabel.setAttribute("x", f2(px(k.ang, RK - 26)));
+      ambLabel.setAttribute("y", f2(py(k.ang, RK - 26) + 3.5));
+      ambLabel.textContent = k.id;
+      ambLabel.setAttribute("opacity", 0.85);
+      ambHide = clock + 1.0;
+      if (modulo) return;   // no ring scan happens under modulo hashing
+      var o = ownerOf(k);
+      var a1 = pointAng[o.pi];
+      if (arcSpan(k.ang, a1) < 0.02) return;
+      var p = takeArc(FAINT, 0.45);
+      p.setAttribute("d", arcD(k.ang, a1, RK));
+      var len = p.getTotalLength();
+      pool.spawn(p, {
+        speed: Math.max(24, len / 0.7),
+        fill: "var(--ink)",
+        r: 2.6,
+        onArrive: function () { releaseArc(p); }
+      }).step(0);
+    }
+
+    apply(true);
+
+    return {
+      step: function (dt) {
+        clock += dt;
+        pool.step(dt);
+
+        if (pulse) {
+          pulse.t += dt;
+          var f = 1 - pulse.t / 0.55;
+          if (f <= 0) {
+            pulse.k.dot.setAttribute("r", DOT_R);
+            pulse = null;
+          } else if (!pulse.k.inFlight) {
+            pulse.k.dot.setAttribute("r", f2(DOT_R + 2.2 * f));
+          }
+        }
+        if (ambHide > 0 && clock > ambHide) {
+          ambHide = -1;
+          ambLabel.setAttribute("opacity", 0);
+        }
+
+        if (busy > 0) { since = 0; return; }
+        since += dt;
+        if (since >= period) {
+          since = 0;
+          ambient();
+        }
+      }
+    };
+  }
+});
+
+
+/* ---- failover ---- */
+/* Figure: retry safety — why routing.retry_policy defaults to connect-failure.
+ *
+ * Two lanes with identical topology, differing only in WHEN the first candidate fails. The whole
+ * argument of the default policy lives in that difference, so the drawing puts the two cases on the
+ * same grid and lets the reader compare the side-effect counters underneath the backends.
+ *
+ * Lane A: the connection is refused before the request lands. Nothing executed, so the replay costs
+ * nothing and every policy except `none` takes it.
+ * Lane B: the request lands, runs, and only then the backend dies. `unavailable` replays it and the
+ * second backend runs it too — the counter reaches 2 while the client is told OK. */
+(function () {
+  "use strict";
+
+  var W = 880, H = 406;
+  var LANE_A = 108, LANE_B = 310;
+
+  /* Lane geometry, in lane-local coordinates (x absolute, y relative to the lane axis). */
+  var CX = 28, CW = 68;          // client
+  var LBX = 140, LBW = 104;      // balancer
+  var B1X = 390, B2X = 618, BW = 112, BH = 38;
+  var CROSS = 364;               // where lane A's connection is refused
+  var RAIL1 = 70, RAIL2 = 82;    // return-wire rails, below the counters
+  var BAND = -29;                // annotation band above the backends
+  var RIGHT = 852;               // right text margin
+
+  NWLB.register({
+    id: "failover",
+    title: 'Retry safety',
+
+    lede:
+      'A request that already ran must not run again.',
+
+    caption:
+      'Lane A fails before the backend sees the request, so retrying is safe. Lane B fails after. Change the policy and watch the side effect counters under each backend.',
+
+    mount: function (stageEl, controlsEl, X) {
+      var svg = X.stage(W, H,
+        "Two request lanes comparing gRPC retry policies. In the upper lane the connection is refused " +
+        "before the request arrives, so replaying it onto the second backend executes it once. In the " +
+        "lower lane the request is delivered and executed before the backend dies, so replaying it " +
+        "executes the same work a second time while the client is told the call succeeded.");
+      stageEl.appendChild(svg);
+
+      var gWire = X.el("g"), gNode = X.el("g"), gText = X.el("g"), gPkt = X.el("g");
+      svg.appendChild(gWire);
+      svg.appendChild(gNode);
+      svg.appendChild(gText);
+      svg.appendChild(gPkt);
+
+      var pool = new X.PacketPool(gPkt, { r: 3.6 });
+      var rand = X.rng(0x51de5a1);
+
+      var SPEED = X.reduced ? 120 : 205;   // user units per second
+      var HOLD = X.reduced ? 1.4 : 0.5;    // dwell at a backend
+      var GAP = X.reduced ? 4.2 : 1.5;     // pause between whole request cycles
+
+      var INK = "var(--ink)";
+      var SOFT = "var(--ink-soft)";
+      var FAINT = "var(--ink-faint)";
+      var BLUE = "var(--accent-blue)";
+      var RED = "var(--accent-red)";
+      var GREEN = "var(--accent-green)";
+      var AMBER = "var(--accent-amber)";
+      var SEMI = "var(--w-semi)";
+
+      /* ------------------------------------------------------------------ primitives */
+
+      function txt(x, y, s, cls, extra) {
+        var t = X.text(x, y, s, cls, extra);
+        gText.appendChild(t);
+        return t;
+      }
+
+      function node(x, y, w, h, label, boxClass, labelClass) {
+        var b = X.box(x, y, w, h, label, { boxClass: boxClass, labelClass: labelClass });
+        b.rect = b.g.querySelector("rect");
+        gNode.appendChild(b.g);
+        return b;
+      }
+
+      // A wire is a <path> that both draws the line and carries the packets, so a dot can never
+      // leave its line: there is exactly one piece of geometry.
+      function wire(d) {
+        var p = X.el("path", { d: d, class: "s-wire", "marker-end": "url(#ah-faint)" });
+        gWire.appendChild(p);
+        return { el: p, on: false, lit: 0 };
+      }
+
+      // A carrying wire is promoted to .s-wire-live and tinted by whatever it is carrying, so the
+      // colour of a leg is a statement about the traffic on it, not decoration on the geometry.
+      function lightWire(w, color) {
+        if (!w.on) {
+          w.el.setAttribute("class", "s-wire-live");
+          w.el.style.stroke = color;
+          w.on = true;
+        }
+        w.lit = -1;                       // held lit until released
+      }
+
+      function releaseWire(w, secs) {
+        if (w.on && w.lit < 0) w.lit = secs;
+      }
+
+      function darkenWire(w) {
+        w.el.setAttribute("class", "s-wire");
+        w.el.style.stroke = "";
+        w.on = false;
+        w.lit = 0;
+      }
+
+      /* --------------------------------------------------------------- side effects */
+
+      function counter(x, y) {
+        var g = X.el("g");
+        var rect = X.el("rect", {
+          x: x, y: y, width: BW, height: 26, rx: 2, class: "s-node-soft", fill: "none",
+        });
+        var cap = X.text(x + 9, y + 18, "side effects", "s-label-sm");
+        var val = X.text(x + BW - 9, y + 18, "0", "s-mono", { "text-anchor": "end" });
+        val.style.fontSize = "14px";
+        val.style.fill = FAINT;
+        g.appendChild(rect);
+        g.appendChild(cap);
+        g.appendChild(val);
+        gNode.appendChild(g);
+        return { rect: rect, val: val, n: 0, flash: 0, tone: "0" };
+      }
+
+      // Four tones: inert (never ran), amber (executing now), counted (ran once, and that is
+      // correct), wrong (this lane executed the request twice). The wrong tone is decided by the
+      // LANE total, not by one box, because the damage is that two different backends each did the
+      // work — so both boxes go red together.
+      function applyTone(c, tone) {
+        if (tone === c.tone) return;
+        c.tone = tone;
+        if (tone === "0") {
+          c.rect.style.stroke = "";
+          c.rect.style.strokeWidth = "";
+          c.val.style.fill = FAINT;
+        } else if (tone === "1") {
+          c.rect.style.stroke = "";
+          c.rect.style.strokeWidth = "";
+          c.val.style.fill = INK;
+        } else if (tone === "f") {
+          c.rect.style.stroke = AMBER;
+          c.rect.style.strokeWidth = SEMI;
+          c.val.style.fill = AMBER;
+        } else {
+          c.rect.style.stroke = RED;
+          c.rect.style.strokeWidth = SEMI;
+          c.val.style.fill = RED;
+        }
+      }
+
+      function toneFor(c, total) {
+        if (c.n === 0) return "0";
+        if (total >= 2) return "2";
+        if (c.flash > 0) return "f";
+        return "1";
+      }
+
+      function refreshCounters(L) {
+        var total = L.c1.n + L.c2.n;
+        applyTone(L.c1, toneFor(L.c1, total));
+        applyTone(L.c2, toneFor(L.c2, total));
+      }
+
+      function tickCounter(L, c) {
+        c.n += 1;
+        c.val.textContent = String(c.n);
+        c.flash = 0.9;
+        refreshCounters(L);
+      }
+
+      function resetCounter(c) {
+        c.n = 0;
+        c.flash = 0;
+        c.val.textContent = "0";
+      }
+
+      /* -------------------------------------------------------------------- a lane */
+
+      function buildLane(y, deliver, title) {
+        var L = { y: y, deliver: deliver, wires: [], hold: 0, after: null, next: null, done: true };
+
+        txt(CX, y - 76, title, "s-label");
+        L.status = txt(RIGHT, y - 76, "", "s-mono", { "text-anchor": "end" });
+
+        /* wires ------------------------------------------------------------------ */
+        L.wClient = wire("M " + (CX + CW) + " " + (y - 8) + " H " + LBX);
+        L.wLbRet = wire("M " + LBX + " " + (y + 8) + " H " + (CX + CW));
+        L.wPrimary = wire("M " + (LBX + LBW) + " " + (y - 8) + " H " + (deliver ? B1X : CROSS));
+        L.wRet1 = wire("M " + B1X + " " + (y + 10) +
+          " H " + (B1X - 12) + " V " + (y + RAIL1) + " H " + (LBX + LBW / 2 + 12) + " V " + (y + 22));
+        L.wRet2 = wire("M " + B2X + " " + (y + 10) +
+          " H " + (B2X - 12) + " V " + (y + RAIL2) + " H " + (LBX + LBW / 2 - 12) + " V " + (y + 22));
+
+        // The replay arc leaves the top of the balancer and passes clear over the first candidate.
+        L.wRetry = wire(
+          "M " + (LBX + LBW / 2 + 24) + " " + (y - 22) +
+          " C " + (LBX + LBW / 2 + 24) + " " + (y - 56) + ", 300 " + (y - 58) + ", 420 " + (y - 58) +
+          " C 540 " + (y - 58) + ", 620 " + (y - 58) + ", " + (B2X + BW / 2) + " " + (y - 19));
+
+        L.wires = [L.wClient, L.wLbRet, L.wPrimary, L.wRet1, L.wRet2, L.wRetry];
+
+        // The replay arc and its label are one group so a policy that forbids the replay can grey
+        // the whole second attempt out before anything moves.
+        L.retryG = X.el("g");
+        gWire.removeChild(L.wRetry.el);
+        L.retryG.appendChild(L.wRetry.el);
+        L.retryG.appendChild(X.text(545, y - 68, "attempt 2 (replay)", "s-mono", { "text-anchor": "middle" }));
+        gWire.appendChild(L.retryG);
+
+        if (!deliver) {
+          // The stretch of wire the request never travelled, drawn but never used.
+          var st = X.el("path", {
+            d: "M " + CROSS + " " + (y - 8) + " H " + B1X,
+            class: "s-wire s-muted", "stroke-dasharray": "3 3",
+          });
+          gWire.appendChild(st);
+        }
+
+        /* nodes ------------------------------------------------------------------ */
+        L.client = node(CX, y - 18, CW, 36, "client", "s-node", "s-label");
+        L.lb = node(LBX, y - 22, LBW, 44, "load balancer", "s-node", "s-label");
+        L.b1 = node(B1X, y - BH / 2, BW, BH, "backend-1", deliver ? "s-node" : "s-node s-dead", "s-mono");
+        L.b2 = node(B2X, y - BH / 2, BW, BH, "backend-2", "s-node", "s-mono");
+        if (!deliver) L.b1.rect.setAttribute("stroke-dasharray", "4 3");
+
+        L.c1 = counter(B1X, y + 32);
+        L.c2 = counter(B2X, y + 32);
+
+        /* annotations ------------------------------------------------------------- */
+        txt(300, y + BAND, "attempt 1", "s-mono", { "text-anchor": "middle" });
+        txt(LBX + LBW / 2 + 30, y + 40, "response", "s-mono");
+
+        if (deliver) {
+          L.deadNote = txt(B1X + BW / 2, y + BAND, "executed, then died", "s-mono", { "text-anchor": "middle" });
+          L.deadNote.style.fill = RED;
+          L.deadNote.style.opacity = "0";
+        } else {
+          var refused = txt(CROSS, y + BAND, "refused", "s-mono", { "text-anchor": "middle" });
+          refused.style.fill = RED;
+          var unreach = txt(B1X + BW / 2, y + BAND, "unreachable", "s-mono", { "text-anchor": "middle" });
+          unreach.style.fill = RED;
+          // The refusal itself: a cross on the wire, short of the backend.
+          var a = X.el("path", { d: "M " + (CROSS - 6) + " " + (y - 14) + " L " + (CROSS + 6) + " " + (y - 2) });
+          var b = X.el("path", { d: "M " + (CROSS + 6) + " " + (y - 14) + " L " + (CROSS - 6) + " " + (y - 2) });
+          a.style.stroke = RED; a.style.strokeWidth = SEMI; a.style.fill = "none";
+          b.style.stroke = RED; b.style.strokeWidth = SEMI; b.style.fill = "none";
+          gWire.appendChild(a);
+          gWire.appendChild(b);
+        }
+
+        txt(CX + CW / 2, y + 34, "client sees", "s-label-sm", { "text-anchor": "middle" });
+        L.badge = txt(CX + CW / 2, y + 50, "…", "s-mono", { "text-anchor": "middle" });
+        L.badge.style.fill = FAINT;
+
+        L.note = txt(RIGHT, y + 74, "", "s-mono", { "text-anchor": "end" });
+
+        return L;
+      }
+
+      var A = buildLane(LANE_A, false, "Lane A. Fails before the backend sees it");
+      var B = buildLane(LANE_B, true, "Lane B. Fails after the backend ran it");
+
+      var rule = X.el("path", { d: "M 20 212 H 860", class: "s-node-soft s-muted" });
+      gWire.appendChild(rule);
+
+      /* ------------------------------------------------------------------- the story */
+
+      var policy = "connect-failure";
+
+      function replayAllowed(L) {
+        return L.deliver ? policy === "unavailable" : policy !== "none";
+      }
+
+      function fly(L, w, color, then) {
+        lightWire(w, color);
+        pool.spawn(w.el, {
+          speed: SPEED, fill: color, r: 3.6,
+          onArrive: function () {
+            releaseWire(w, 0.45);
+            L.next = then;
+          },
+        });
+      }
+
+      function hold(L, secs, then) {
+        L.hold = secs;
+        L.after = then;
+      }
+
+      function startLane(L) {
+        resetLane(L);
+        L.done = false;
+        fly(L, L.wClient, BLUE, function () { attempt1(L); });
+      }
+
+      function attempt1(L) {
+        fly(L, L.wPrimary, BLUE, function () {
+          if (L.deliver) {
+            // Delivered. The work happens here, and only afterwards does the backend go away.
+            tickCounter(L, L.c1);
+            L.b1.rect.setAttribute("class", "s-node s-dead");
+            L.b1.rect.setAttribute("stroke-dasharray", "4 3");
+            L.deadNote.style.opacity = "1";
+            hold(L, HOLD, function () { errorHome(L); });
+          } else {
+            // Refused on the wire. Nothing was delivered, so nothing was executed.
+            hold(L, HOLD, function () { decide(L); });
+          }
+        });
+      }
+
+      // Lane B only: the failure has to travel back from the backend, which is precisely why the
+      // balancer cannot know whether the request ran.
+      function errorHome(L) {
+        fly(L, L.wRet1, RED, function () {
+          hold(L, 0.25, function () { decide(L); });
+        });
+      }
+
+      function decide(L) {
+        if (replayAllowed(L)) replay(L);
+        else finish(L, false);
+      }
+
+      function replay(L) {
+        L.replayed = true;
+        // Same wire, different meaning: an ordinary re-route in lane A, a gamble in lane B.
+        fly(L, L.wRetry, L.deliver ? AMBER : BLUE, function () {
+          tickCounter(L, L.c2);
+          hold(L, HOLD, function () { successHome(L); });
+        });
+      }
+
+      function successHome(L) {
+        fly(L, L.wRet2, GREEN, function () {
+          hold(L, 0.2, function () { finish(L, true); });
+        });
+      }
+
+      function finish(L, ok) {
+        fly(L, L.wLbRet, ok ? GREEN : RED, function () {
+          var n = L.c1.n + L.c2.n;
+          L.badge.textContent = ok ? "OK" : "UNAVAILABLE";
+          L.badge.style.fill = ok ? GREEN : RED;
+          L.status.textContent = "executions " + n + "  ·  client saw " + (ok ? "OK" : "UNAVAILABLE");
+          L.status.style.fill = n >= 2 ? RED : SOFT;
+
+          if (n >= 2) {
+            L.note.textContent = "replayed -> the work ran twice";
+            L.note.style.fill = RED;
+          } else if (!L.replayed && policy === "none") {
+            L.note.textContent = "policy none -> no replay";
+            L.note.style.fill = FAINT;
+          } else if (L.replayed) {
+            L.note.textContent = "never delivered -> replay is safe";
+            L.note.style.fill = GREEN;
+          } else {
+            L.note.textContent = "ambiguous -> declined, error surfaced";
+            L.note.style.fill = GREEN;
+          }
+
+          if (L.deliver) {
+            readout.innerHTML = "lane B: executions <b>" + n + "</b> &middot; client saw <b>" +
+              (ok ? "OK" : "UNAVAILABLE") + "</b>";
+          }
+          L.done = true;
+        });
+      }
+
+      function resetLane(L) {
+        L.hold = 0;
+        L.after = null;
+        L.next = null;
+        L.replayed = false;
+        resetCounter(L.c1);
+        resetCounter(L.c2);
+        refreshCounters(L);
+        L.badge.textContent = "…";
+        L.badge.style.fill = FAINT;
+        L.status.textContent = "";
+        L.note.textContent = "";
+        if (L.deliver) {
+          L.b1.rect.setAttribute("class", "s-node");
+          L.b1.rect.removeAttribute("stroke-dasharray");
+          L.deadNote.style.opacity = "0";
+        }
+        for (var i = 0; i < L.wires.length; i++) darkenWire(L.wires[i]);
+      }
+
+      /* --------------------------------------------------------------------- controls */
+
+      var readout = X.readout("lane B: waiting for the first request");
+      var buttons = {};
+
+      function applyPolicy() {
+        for (var k in buttons) buttons[k].setAttribute("aria-pressed", String(k === policy));
+        A.retryG.setAttribute("class", replayAllowed(A) ? "" : "s-muted");
+        B.retryG.setAttribute("class", replayAllowed(B) ? "" : "s-muted");
+      }
+
+      function choose(p) {
+        policy = p;
+        applyPolicy();
+        pool.clear();
+        resetLane(A);
+        resetLane(B);
+        A.done = true;
+        B.done = true;
+        running = false;
+        wait = 0.3;
+        readout.innerHTML = "lane B: waiting for the next request";
+      }
+
+      function policyButton(id, text) {
+        var b = X.button(text, function () { choose(id); }, { pressed: id === policy });
+        buttons[id] = b;
+        return b;
+      }
+
+      controlsEl.appendChild(X.group([
+        X.label("retry policy"),
+        policyButton("connect-failure", "connect-failure (default)"),
+        policyButton("unavailable", "unavailable"),
+        policyButton("none", "none"),
+      ]));
+      controlsEl.appendChild(readout);
+      applyPolicy();
+
+      /* ------------------------------------------------------------------------ clock */
+
+      var running = false;
+      var wait = 0.4;
+
+      function stepLane(L, dt) {
+        if (L.next) {
+          var n = L.next;
+          L.next = null;
+          n();
+        }
+        if (L.hold > 0) {
+          L.hold -= dt;
+          if (L.hold <= 0) {
+            L.hold = 0;
+            var a = L.after;
+            L.after = null;
+            if (a) a();
+          }
+        }
+        for (var i = 0; i < L.wires.length; i++) {
+          var w = L.wires[i];
+          if (!w.on || w.lit < 0) continue;
+          w.lit -= dt;
+          if (w.lit <= 0) darkenWire(w);
+        }
+        var settled = false;
+        if (L.c1.flash > 0) {
+          L.c1.flash -= dt;
+          if (L.c1.flash <= 0) { L.c1.flash = 0; settled = true; }
+        }
+        if (L.c2.flash > 0) {
+          L.c2.flash -= dt;
+          if (L.c2.flash <= 0) { L.c2.flash = 0; settled = true; }
+        }
+        if (settled) refreshCounters(L);
+      }
+
+      return {
+        step: function (dt) {
+          pool.step(dt);
+          stepLane(A, dt);
+          stepLane(B, dt);
+          if (running) {
+            // Both lanes restart together so the two outcomes stay side by side.
+            if (A.done && B.done) {
+              running = false;
+              wait = GAP * (0.9 + 0.2 * rand());
+            }
+          } else {
+            wait -= dt;
+            if (wait <= 0) {
+              running = true;
+              startLane(A);
+              startLane(B);
+            }
+          }
+        },
+      };
+    },
+  });
+})();
+
+
+/* ---- omission ---- */
+/* Coordinated omission.
+ *
+ * The figure runs a 15-second open-loop benchmark against a host whose sustained capacity is fixed
+ * at 52,600 rps — the saturation point measured on the machine in the README. The schedule is
+ * committed in advance (start + i/rps), so when the server falls behind, the SENT row shears away
+ * from the SCHEDULED row and the gap between the two timers is drawn rather than asserted.
+ *
+ * The model is deliberately small: a reflected fluid queue, q' = max(0, offered - capacity), with a
+ * seeded per-segment wobble on capacity so a sub-capacity run still breathes. Service p99 is a
+ * saturating curve pinned to the measured 38 ms at the knee; response p99 is that plus q/capacity.
+ * At 55,000 rps this lands near 700 ms against a measured 696 ms, which is the point of the figure.
+ */
+(function () {
+  "use strict";
+
+  /* ------------------------------------------------------------------ geometry */
+
+  var W = 880, H = 472;
+  var L = 138, R = 688, PW = R - L;      // the plot column, shared by all three bands
+  var GUT = 124;                          // row labels are right-aligned here
+  var RC = 712;                           // right-hand annotation column
+
+  var YA = 86, YB = 142, YAXIS = 178;     // band 1: scheduled row, sent row, run-time axis
+  var QTOP = 226, QBASE = 288;            // band 2: backlog area chart
+  var Y3LAB = 334, Y3G0 = 340, Y3G1 = 428;
+  var YRESP = 366, YSERV = 406, YIAX = 444; // band 3: the magnified single request
+
+  /* --------------------------------------------------------------------- model */
+
+  var RUN = 15;          // seconds per benchmark run
+  var CAP = 52.6;        // thousand rps the host sustains (measured: 52,614 achieved at 55k offered)
+  var NREQ = 30;         // drawn marks; one per ~0.5 s of schedule
+  var NSEG = 60;         // integration segments for the queue
+  var SLO = 200;         // ms, the p99 response budget
+  var QFULL = 100;       // thousand requests = full height of the backlog chart
+  var HOLD = 1.6;        // seconds the finished run is held before it restarts
+
+  var RANGES = [2, 5, 10, 20, 30, 50, 70, 100, 150, 200, 300, 500, 700, 1000, 1500, 2000, 3000,
+    5000, 7000, 10000, 15000, 20000];
+
+  function commas(n) {
+    return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+  function fmtMs(v) {
+    if (v < 10) return v.toFixed(2);
+    if (v < 100) return v.toFixed(1);
+    return commas(v);
+  }
+  // Quarter-points of the nice ranges land on halves (30 → 7.5, 22.5), so keep a decimal until the
+  // numbers are big enough that one would be noise.
+  function fmtAxis(v) {
+    if (v < 1000) return String(Math.round(v * 10) / 10);
+    return commas(v);
+  }
+
+  NWLB.register({
+    id: "omission",
+    title: 'Two timers',
+    lede:
+      'Service time measures the server. Response time measures the wait the server caused.',
+    caption:
+      'Drag the offered load past capacity. One timer barely moves. The other runs away. A closed loop client stops sending when the server stalls, so it never sees the backlog it caused.',
+
+    mount: function (stageEl, controlsEl, X) {
+      var svg = X.stage(W, H,
+        "A 15-second open-loop benchmark. A row of evenly spaced scheduled request ticks sits above " +
+        "a row of marks showing when each request was actually sent; as offered load crosses the " +
+        "host's capacity the sent marks drift right and a backlog chart below grows. A magnified " +
+        "view of one request compares its service time with its response time.");
+      stageEl.appendChild(svg);
+
+      var gStatic = X.el("g", null);
+      var gDyn = X.el("g", null);
+      var gPkt = X.el("g", null);
+      svg.appendChild(gStatic);
+      svg.appendChild(gDyn);
+      svg.appendChild(gPkt);
+
+      var pool = new X.PacketPool(gPkt, { r: 3.3 });
+
+      /* ------------------------------------------------------- deterministic state */
+
+      // Per-segment wobble on the drain rate, normalised to mean exactly 1 so the wobble adds
+      // texture without quietly moving the capacity the figure claims to hold fixed.
+      var rnd = X.rng(0x5eed17);
+      var mult = new Array(NSEG), msum = 0;
+      for (var m = 0; m < NSEG; m++) { mult[m] = 0.93 + 0.14 * rnd(); msum += mult[m]; }
+      for (var m2 = 0; m2 < NSEG; m2++) mult[m2] *= NSEG / msum;
+
+      var qArr = new Float64Array(NSEG + 1);     // thousands of requests backlogged
+      var waitMs = new Float64Array(NSEG + 1);   // that backlog expressed as queueing delay
+
+      var schedT = new Array(NREQ), schedX = new Array(NREQ);
+      for (var j = 0; j < NREQ; j++) {
+        schedT[j] = ((j + 1) / NREQ) * RUN * 0.99;   // the last mark sits at the 99th percentile
+        schedX[j] = L + (schedT[j] / RUN) * PW;
+      }
+
+      var offered = 55;      // thousand rps
+      var servP99 = 0;       // ms, recomputed on load change
+      var tDiv = -1;         // run time at which response p99 crosses the 200 ms budget
+      var behind = false;    // did a backlog build at all
+      var tNow = 0, hold = 0, spawnAcc = 0, readAcc = 0, readDue = true;
+      var insetRange = 1000;
+
+      function rebuild() {
+        var dtSeg = RUN / NSEG;
+        qArr[0] = 0; waitMs[0] = 0;
+        for (var i = 0; i < NSEG; i++) {
+          var q = qArr[i] + (offered - CAP * mult[i]) * dtSeg;
+          if (q < 0) q = 0;
+          qArr[i + 1] = q;
+          waitMs[i + 1] = (q / CAP) * 1000;
+        }
+        var rho = offered / CAP;
+        var sat = rho < 1 ? rho : 1;
+        servP99 = 0.85 + 37 * Math.pow(sat, 5) + 1.5 * Math.max(0, rho - 1);
+
+        // The moment worth annotating is not when the queue becomes non-empty — over capacity that
+        // is t = 0 — but when the queue has pushed response time through the 200 ms budget while
+        // service time has not moved at all.
+        var need = Math.max(0, SLO - servP99);
+        var d = -1;
+        if (waitMs[NSEG] > need) {
+          d = NSEG;
+          while (d > 0 && waitMs[d - 1] > need) d--;
+        }
+        tDiv = d >= 0 ? (d / NSEG) * RUN : -1;
+        behind = waitMs[NSEG] >= 8;
+        insetRange = pickRange(servP99 + waitMs[NSEG] * 0.35, insetRange, true);
+      }
+
+      function lerp(arr, t) {
+        if (t <= 0) return arr[0];
+        if (t >= RUN) return arr[NSEG];
+        var u = (t / RUN) * NSEG;
+        var i = u | 0;
+        return arr[i] + (arr[i + 1] - arr[i]) * (u - i);
+      }
+      function waitAt(t) { return lerp(waitMs, t); }
+      function qAt(t) { return lerp(qArr, t); }
+
+      // Nice-number autoscale with hysteresis, so the magnified axis does not flicker between
+      // decades while the backlog grows through one.
+      function pickRange(v, cur, force) {
+        if (!force && v < cur * 0.90 && v > cur * 0.30) return cur;
+        var want = v * 1.14;
+        for (var i = 0; i < RANGES.length; i++) if (RANGES[i] >= want) return RANGES[i];
+        return RANGES[RANGES.length - 1];
+      }
+
+      /* ------------------------------------------------------------------ static ink */
+
+      function add(node) { gStatic.appendChild(node); return node; }
+
+      add(X.text(L, 42,
+        "15 s open-loop run · one mark per 0.5 s of schedule · capacity fixed at 52,600 rps",
+        "s-mono"));
+
+      // Band 1 — the two rows.
+      add(X.el("path", { class: "s-wire", d: "M" + L + "," + YA + "H" + R }));
+      add(X.el("path", { class: "s-wire", d: "M" + L + "," + YB + "H" + R }));
+
+      var schedD = "";
+      for (var s = 0; s < NREQ; s++) {
+        schedD += "M" + schedX[s].toFixed(1) + "," + (YA - 9) + "V" + (YA + 9);
+      }
+      add(X.el("path", {
+        d: schedD, fill: "none", stroke: "var(--ink)", "stroke-width": "var(--w-semi)",
+      }));
+
+      add(X.text(GUT, YA - 4, "SCHEDULED", "s-label", { "text-anchor": "end" }));
+      add(X.text(GUT, YA + 11, "start + i/rps · fixed", "s-label-sm", { "text-anchor": "end" }));
+      add(X.text(GUT, YB - 4, "SENT", "s-label", { "text-anchor": "end" }));
+      add(X.text(GUT, YB + 11, "when a worker took it", "s-label-sm", { "text-anchor": "end" }));
+
+      // Band 1 — the run-time axis.
+      add(X.el("path", {
+        class: "s-wire-live", d: "M" + L + "," + YAXIS + "H" + (R + 10),
+        "marker-end": "url(#ah-faint)",
+      }));
+      for (var a = 0; a <= 5; a++) {
+        var ta = a * 3, xa = L + (ta / RUN) * PW;
+        add(X.el("path", {
+          class: "s-wire", d: "M" + xa.toFixed(1) + "," + YAXIS + "V" + (YAXIS + 6),
+        }));
+        add(X.text(xa, YAXIS + 20, a === 5 ? "15 s" : String(ta), "s-mono",
+          { "text-anchor": "middle" }));
+      }
+      add(X.text(GUT, YAXIS + 4, "run time", "s-label-sm", { "text-anchor": "end" }));
+
+      // Band 2 — the backlog chart.
+      add(X.el("path", { class: "s-wire", d: "M" + L + "," + QBASE + "H" + R }));
+      add(X.el("path", {
+        class: "s-wire", d: "M" + L + "," + QTOP + "H" + R, "stroke-dasharray": "1 4",
+      }));
+      add(X.text(L + 4, QTOP - 6, "100,000 requests = full scale", "s-mono"));
+      add(X.text(GUT, QTOP + 26, "BACKLOG", "s-label", { "text-anchor": "end" }));
+      add(X.text(GUT, QTOP + 41, "requests queued", "s-label-sm", { "text-anchor": "end" }));
+      add(X.text(GUT, QTOP + 55, "wait = q ÷ capacity", "s-label-sm", { "text-anchor": "end" }));
+
+      // Band 3 — separator and gutter.
+      add(X.el("path", { class: "s-wire", d: "M40," + (Y3LAB - 22) + "H696" }));
+      add(X.text(GUT, YRESP - 4, "THE p99 REQUEST", "s-label", { "text-anchor": "end" }));
+      add(X.text(GUT, YRESP + 11, "of the run so far,", "s-label-sm", { "text-anchor": "end" }));
+      add(X.text(GUT, YRESP + 24, "magnified", "s-label-sm", { "text-anchor": "end" }));
+      var magTx = add(X.text(GUT, YRESP + 42, "×15", "s-mono", { "text-anchor": "end" }));
+
+      add(X.el("path", {
+        class: "s-wire-live", d: "M" + L + "," + YIAX + "H" + R,
+      }));
+      // The end labels are anchored inwards so the axis never writes into the annotation column.
+      var iaxLabels = [];
+      for (var k = 0; k <= 4; k++) {
+        var xk = L + (k / 4) * PW;
+        add(X.el("path", { class: "s-wire", d: "M" + xk.toFixed(1) + "," + YIAX + "V" + (YIAX + 6) }));
+        iaxLabels.push(add(X.text(xk, YIAX + 18, "", "s-mono", {
+          "text-anchor": k === 0 ? "start" : (k === 4 ? "end" : "middle"),
+        })));
+      }
+
+      /* --------------------------------------------------- right column annotation */
+
+      add(X.text(RC, 46, "TWO TIMERS", "s-mono"));
+      add(X.el("path", {
+        d: "M" + RC + ",60H" + (RC + 26), fill: "none",
+        stroke: "var(--accent-blue)", "stroke-width": "var(--w-thick)",
+      }));
+      add(X.text(RC + 34, 64, "service", "s-label"));
+      add(X.text(RC, 80, "send → response", "s-label-sm"));
+      // The response swatch is drawn half green, half red: the bracket below carries the SLO verdict
+      // in its own colour, and the legend has to admit that it changes.
+      add(X.el("path", {
+        d: "M" + RC + ",96H" + (RC + 13), fill: "none",
+        stroke: "var(--accent-green)", "stroke-width": "var(--w-thick)",
+      }));
+      add(X.el("path", {
+        d: "M" + (RC + 13) + ",96H" + (RC + 26), fill: "none",
+        stroke: "var(--accent-red)", "stroke-width": "var(--w-thick)",
+      }));
+      add(X.text(RC + 34, 100, "response", "s-label"));
+      add(X.text(RC, 116, "scheduled → response", "s-label-sm"));
+      add(X.el("path", { class: "s-wire", d: "M" + RC + ",140H858" }));
+
+      add(X.text(RC, 164, "MEASURED AT 55,000 RPS", "s-mono"));
+      add(X.text(RC, 186, "service  p99    38 ms", "s-mono", { fill: "var(--accent-blue)" }));
+      add(X.text(RC, 202, "response p99   696 ms", "s-mono", { fill: "var(--accent-red)" }));
+
+      /* ----------------------------------------------------------------- dynamic ink */
+
+      function dyn(node) { gDyn.appendChild(node); return node; }
+
+      var COLS = ["var(--accent-blue)", "var(--accent-amber)", "var(--accent-red)"];
+      var sentPaths = [], connPaths = [];
+      for (var c = 0; c < 3; c++) {
+        connPaths.push(dyn(X.el("path", {
+          d: "", fill: "none", stroke: COLS[c], "stroke-width": "var(--w-thin)", opacity: 0.55,
+        })));
+      }
+      for (var c2 = 0; c2 < 3; c2++) {
+        sentPaths.push(dyn(X.el("path", {
+          d: "", fill: "none", stroke: COLS[c2], "stroke-width": "var(--w-semi)",
+        })));
+      }
+      var emphPath = dyn(X.el("path", {
+        d: "", fill: "none", stroke: "var(--ink)", "stroke-width": "var(--w-thick)",
+      }));
+      var emphTx = dyn(X.text(0, 168, "magnified below", "s-label-sm"));
+
+      var unsentTx = dyn(X.text(L, 168, "", "s-label-sm", { fill: "var(--accent-red)" }));
+
+      var playhead = dyn(X.el("path", {
+        d: "", fill: "none", stroke: "var(--ink-faint)", "stroke-width": "var(--w-thin)",
+      }));
+
+      var divLine = dyn(X.el("path", {
+        d: "", fill: "none", stroke: "var(--accent-amber)", "stroke-width": "var(--w-semi)",
+        "stroke-dasharray": "2 3",
+      }));
+      var divTx = dyn(X.text(0, 62,
+        "response p99 crosses 200 ms. service p99 has not moved", "s-label-sm",
+        { fill: "var(--accent-amber)" }));
+      var okTx = dyn(X.text(L + 4, 62, "", "s-label-sm", { fill: "var(--accent-green)" }));
+
+      var qArea = dyn(X.el("path", { d: "", stroke: "none", fill: "var(--blue-wash)" }));
+      var qLine = dyn(X.el("path", {
+        d: "", fill: "none", stroke: "var(--accent-blue)", "stroke-width": "var(--w-semi)",
+      }));
+      var qTx = dyn(X.text(R, QTOP - 6, "", "s-mono", { "text-anchor": "end" }));
+
+      // Band 3: guides, brackets, labels.
+      var guides = [];
+      for (var g = 0; g < 3; g++) {
+        guides.push(dyn(X.el("path", {
+          d: "", fill: "none", stroke: "var(--ink-faint)", "stroke-width": "var(--w-thin)",
+          "stroke-dasharray": "1 3",
+        })));
+      }
+      var gLab = [
+        dyn(X.text(0, Y3LAB, "scheduled", "s-label-sm")),
+        dyn(X.text(0, Y3LAB, "sent", "s-label-sm")),
+        dyn(X.text(0, Y3LAB, "completed", "s-label-sm")),
+      ];
+
+      // The wire a packet rides is the wire that draws the bracket; the end ticks are separate so a
+      // dot can never run down one of them.
+      var respWire = dyn(X.el("path", {
+        d: "", fill: "none", stroke: "var(--accent-red)", "stroke-width": "var(--w-thick)",
+      }));
+      var respCaps = dyn(X.el("path", {
+        d: "", fill: "none", stroke: "var(--accent-red)", "stroke-width": "var(--w-semi)",
+      }));
+      var servWire = dyn(X.el("path", {
+        d: "", fill: "none", stroke: "var(--accent-blue)", "stroke-width": "var(--w-thick)",
+      }));
+      var servCaps = dyn(X.el("path", {
+        d: "", fill: "none", stroke: "var(--accent-blue)", "stroke-width": "var(--w-semi)",
+      }));
+
+      var respName = dyn(X.text(L + 6, YRESP - 10, "RESPONSE TIME", "s-label"));
+      var respVal = dyn(X.text(L + 112, YRESP - 10, "", "s-mono", { fill: "var(--ink)" }));
+      var respSub = dyn(X.text(L + 6, YRESP + 18, "what the user actually waited", "s-label-sm"));
+      var verdict = dyn(X.text(R, YRESP - 10, "", "s-mono", { "text-anchor": "end" }));
+
+      var servName = dyn(X.text(R - 84, YSERV - 10, "SERVICE TIME", "s-label",
+        { "text-anchor": "end" }));
+      var servVal = dyn(X.text(R, YSERV - 10, "", "s-mono",
+        { "text-anchor": "end", fill: "var(--ink)" }));
+      var servSub = dyn(X.text(R, YSERV + 18, "what a closed-loop client reports", "s-label-sm",
+        { "text-anchor": "end" }));
+
+      /* -------------------------------------------------------------------- controls */
+
+      var loadOut = X.readout("");
+      var p99Out = X.readout("");
+
+      var slider = X.slider({
+        min: 20, max: 70, step: 0.5, value: offered, label: "offered load, thousand rps",
+        onInput: function (v) { setLoad(v); },
+      });
+
+      function setLoad(v) {
+        offered = v;
+        rebuild();
+        pool.clear();
+        draw(true);
+      }
+
+      function restart() {
+        tNow = 0; hold = 0; spawnAcc = 0;
+        pool.clear();
+        insetRange = pickRange(servP99, insetRange, true);
+        draw(true);
+      }
+
+      controlsEl.appendChild(X.group([X.label("offered load"), slider, loadOut]));
+      controlsEl.appendChild(X.group([p99Out]));
+      controlsEl.appendChild(X.group([
+        X.button("under capacity · 40k", function () { slider.value = "40"; setLoad(40); }),
+        X.button("the measured row · 55k", function () { slider.value = "55"; setLoad(55); }),
+        X.button("restart run", restart),
+      ]));
+
+      /* ------------------------------------------------------------------- rendering */
+
+      var connD = ["", "", ""], sentD = ["", "", ""], seg = [];
+
+      function draw(force) {
+        var i, x;
+
+        // --- band 1: sent marks, sheared away from the schedule they were promised.
+        connD[0] = connD[1] = connD[2] = "";
+        sentD[0] = sentD[1] = sentD[2] = "";
+        var hl = -1, hlWait = 0;
+        for (i = 0; i < NREQ; i++) {
+          var w = waitAt(schedT[i]);
+          var tSent = schedT[i] + w / 1000;
+          if (tSent > tNow) break;
+          hl = i; hlWait = w;
+          var xs = tSent >= RUN ? R : L + (tSent / RUN) * PW;
+          var band = w < 8 ? 0 : (w < SLO ? 1 : 2);
+          sentD[band] += "M" + xs.toFixed(1) + "," + (YB - 9) + "V" + (YB + 9);
+          connD[band] += "M" + schedX[i].toFixed(1) + "," + (YA + 9) +
+            "L" + xs.toFixed(1) + "," + (YB - 9);
+        }
+        for (i = 0; i < 3; i++) {
+          sentPaths[i].setAttribute("d", sentD[i]);
+          connPaths[i].setAttribute("d", connD[i]);
+        }
+
+        if (hl >= 0) {
+          var tS = schedT[hl] + hlWait / 1000;
+          var xS = tS >= RUN ? R : L + (tS / RUN) * PW;
+          emphPath.setAttribute("d",
+            "M" + schedX[hl].toFixed(1) + "," + (YA - 13) + "V" + (YA + 13) +
+            "M" + xS.toFixed(1) + "," + (YB - 13) + "V" + (YB + 13));
+          emphPath.setAttribute("opacity", "1");
+          var flip = xS > R - 90;
+          emphTx.setAttribute("x", (flip ? xS - 6 : xS + 6).toFixed(1));
+          emphTx.setAttribute("text-anchor", flip ? "end" : "start");
+          emphTx.setAttribute("opacity", "1");
+        } else {
+          emphPath.setAttribute("opacity", "0");
+          emphTx.setAttribute("opacity", "0");
+        }
+
+        // Requests the run never got to: scheduled ticks with nothing underneath them. A closed-loop
+        // generator would simply never have issued these, and so never counted them.
+        if (tNow >= RUN && hl < NREQ - 1) {
+          unsentTx.textContent = commas(NREQ - 1 - hl) +
+            " of " + NREQ + " scheduled requests were still unsent when the run ended";
+          unsentTx.setAttribute("opacity", "1");
+        } else {
+          unsentTx.setAttribute("opacity", "0");
+        }
+
+        var xNow = L + (Math.min(tNow, RUN) / RUN) * PW;
+        playhead.setAttribute("d", "M" + xNow.toFixed(1) + ",70V" + QBASE);
+
+        // --- divergence annotation: three states, one of them drawn at a time.
+        if (tDiv >= 0) {
+          var xd = L + (tDiv / RUN) * PW;
+          divLine.setAttribute("d", "M" + xd.toFixed(1) + ",68V" + QBASE);
+          divLine.setAttribute("opacity", "1");
+          var dflip = xd > R - 320;
+          divTx.setAttribute("x", (dflip ? xd - 5 : xd + 5).toFixed(1));
+          divTx.setAttribute("text-anchor", dflip ? "end" : "start");
+          divTx.setAttribute("opacity", "1");
+          okTx.setAttribute("opacity", "0");
+        } else {
+          divLine.setAttribute("opacity", "0");
+          divTx.setAttribute("opacity", "0");
+          okTx.setAttribute("opacity", "1");
+          okTx.textContent = behind
+            ? "SENT drifts, but response p99 stays inside the 200 ms budget"
+            : "SENT tracks SCHEDULED. the timers agree";
+          okTx.setAttribute("fill", behind ? "var(--accent-amber)" : "var(--accent-green)");
+        }
+
+        // --- band 2: the backlog area.
+        var qh = QBASE - QTOP;
+        var last = Math.min(Math.floor((Math.min(tNow, RUN) / RUN) * NSEG), NSEG);
+        seg.length = 0;
+        var clipped = false;
+        for (i = 0; i <= last; i++) {
+          var frac = qArr[i] / QFULL;
+          if (frac > 1) { frac = 1; clipped = true; }
+          x = L + (i / NSEG) * PW;
+          seg.push(x.toFixed(1) + "," + (QBASE - frac * qh).toFixed(1));
+        }
+        var fNow = qAt(Math.min(tNow, RUN)) / QFULL;
+        if (fNow > 1) { fNow = 1; clipped = true; }
+        seg.push(xNow.toFixed(1) + "," + (QBASE - fNow * qh).toFixed(1));
+
+        var poly = seg.join(" L");
+        qLine.setAttribute("d", "M" + poly);
+        qArea.setAttribute("d",
+          "M" + L + "," + QBASE + " L" + poly + " L" + xNow.toFixed(1) + "," + QBASE + " Z");
+
+        var wNow = waitAt(Math.min(tNow, RUN));
+        var sev = wNow < 8 ? 0 : (wNow < SLO ? 1 : 2);
+        qLine.setAttribute("stroke", COLS[sev]);
+        qArea.setAttribute("fill",
+          sev === 0 ? "var(--blue-wash)" : (sev === 1 ? "var(--amber-wash)" : "var(--red-wash)"));
+        qTx.textContent = "q = " + commas(qAt(Math.min(tNow, RUN)) * 1000) + " req  ·  wait " +
+          fmtMs(wNow) + " ms" + (clipped ? "  ·  off scale" : "");
+        qTx.setAttribute("fill", sev === 2 ? "var(--accent-red)" : "var(--ink-soft)");
+
+        // --- band 3: the magnified request.
+        var respMs = servP99 + wNow;
+        insetRange = pickRange(respMs, insetRange, !!force);
+        var sc = PW / insetRange;
+        var xSent = L + Math.min(wNow * sc, PW);
+        var xDone = L + Math.min((wNow + servP99) * sc, PW);
+
+        guides[0].setAttribute("d", "M" + L + "," + Y3G0 + "V" + Y3G1);
+        guides[1].setAttribute("d", "M" + xSent.toFixed(1) + "," + Y3G0 + "V" + Y3G1);
+        guides[2].setAttribute("d", "M" + xDone.toFixed(1) + "," + Y3G0 + "V" + Y3G1);
+
+        // When two of the three instants land on top of each other, say so rather than stacking two
+        // labels in the same 3 px: "scheduled = sent" is the whole lesson when the system keeps up.
+        var coincStart = xSent - L < 34;
+        var coincEnd = xDone - xSent < 68;
+        gLab[0].setAttribute("x", (L + 5).toFixed(1));
+        gLab[0].textContent = coincStart ? "scheduled = sent" : "scheduled";
+        gLab[1].setAttribute("x", (xSent + 5).toFixed(1));
+        gLab[1].setAttribute("opacity", coincStart ? "0" : "1");
+        gLab[1].textContent = coincEnd ? "sent · completed" : "sent";
+        var cflip = xDone > R - 66;
+        gLab[2].setAttribute("x", (cflip ? xDone - 5 : xDone + 5).toFixed(1));
+        gLab[2].setAttribute("text-anchor", cflip ? "end" : "start");
+        gLab[2].setAttribute("opacity", coincEnd ? "0" : "1");
+
+        respWire.setAttribute("d", "M" + L + "," + YRESP + "H" + xDone.toFixed(1));
+        respCaps.setAttribute("d",
+          "M" + L + "," + (YRESP - 7) + "V" + (YRESP + 7) +
+          "M" + xDone.toFixed(1) + "," + (YRESP - 7) + "V" + (YRESP + 7));
+        servWire.setAttribute("d", "M" + xSent.toFixed(1) + "," + YSERV + "H" + xDone.toFixed(1));
+        servCaps.setAttribute("d",
+          "M" + xSent.toFixed(1) + "," + (YSERV - 7) + "V" + (YSERV + 7) +
+          "M" + xDone.toFixed(1) + "," + (YSERV - 7) + "V" + (YSERV + 7));
+
+        var fail = respMs > SLO;
+        var rc = fail ? "var(--accent-red)" : "var(--accent-green)";
+        respWire.setAttribute("stroke", rc);
+        respCaps.setAttribute("stroke", rc);
+        respVal.textContent = fmtMs(respMs) + " ms";
+        servVal.textContent = fmtMs(servP99) + " ms";
+        verdict.textContent = fail ? "SLO FAIL · budget 200 ms" : "SLO PASS · budget 200 ms";
+        verdict.setAttribute("fill", rc);
+
+        for (i = 0; i <= 4; i++) {
+          iaxLabels[i].textContent = fmtAxis((i / 4) * insetRange) + (i === 4 ? " ms" : "");
+        }
+        magTx.textContent = "×" + commas(sc / (PW / (RUN * 1000)));
+
+        // --- readouts, rewritten a few times a second rather than every frame.
+        if (force || readDue) {
+          readDue = false;
+          loadOut.innerHTML = "offered <b>" + commas(offered * 1000) + "</b> rps · capacity " +
+            "<b>52,600</b> · t = <b>" + Math.min(tNow, RUN).toFixed(1) + " s</b>";
+          p99Out.innerHTML = "service p99 <b>" + fmtMs(servP99) + " ms</b> · response p99 <b>" +
+            fmtMs(respMs) + " ms</b>";
+        }
+
+        return { xDone: xDone, fail: fail };
+      }
+
+      /* ------------------------------------------------------------------ simulation */
+
+      rebuild();
+      var state = draw(true);
+      var spawnEvery = X.reduced ? 6.5 : 2.2;
+
+      return {
+        step: function (dt) {
+          if (hold > 0) {
+            hold -= dt;
+            if (hold <= 0) { tNow = 0; hold = 0; pool.clear(); }
+          } else {
+            tNow += dt * 1.5;
+            if (tNow >= RUN) { tNow = RUN; hold = HOLD; }
+          }
+
+          readAcc += dt;
+          if (readAcc >= 0.12) { readAcc = 0; readDue = true; }
+
+          state = draw(false);
+
+          spawnAcc += dt;
+          if (spawnAcc >= spawnEvery) {
+            spawnAcc = 0;
+            if (state.xDone - L > 3) {
+              pool.spawn(respWire, {
+                speed: 230, r: 3.4,
+                fill: state.fail ? "var(--accent-red)" : "var(--accent-green)",
+              });
+              pool.spawn(servWire, { speed: 230, r: 3.4, fill: "var(--accent-blue)" });
+            }
+          }
+          pool.step(dt);
+        },
+      };
+    },
+  });
+})();
+
+
+NWLB.mountAll(document.getElementById('figures'));</script>

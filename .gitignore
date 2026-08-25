@@ -1,0 +1,9 @@
+bin/
+dist/
+*.out
+*.test
+*.prof
+bench/results/*.json
+bench/results/*.md
+!bench/results/.gitkeep
+.DS_Store

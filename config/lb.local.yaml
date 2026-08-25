@@ -1,0 +1,56 @@
+# Same topology as config/lb.yaml, but with the backends on loopback ports for running everything
+# on one host. Success logging is off entirely so a benchmark measures the proxy, not the log writer.
+listen: ":8080"
+admin_listen: ":9090"
+
+backends:
+  - id: backend-1
+    addr: "127.0.0.1:50051"
+    weight: 100
+  - id: backend-2
+    addr: "127.0.0.1:50052"
+    weight: 100
+  - id: backend-3
+    addr: "127.0.0.1:50053"
+    weight: 100
+
+routing:
+  hash_header: "x-session-id"
+  virtual_nodes: 200
+  max_attempts: 3
+  # connect-failure (default, at-most-once) | unavailable (at-least-once) | none
+  retry_policy: "connect-failure"
+
+health:
+  interval: 1s
+  timeout: 500ms
+  rise: 2
+  fall: 3
+  service: ""
+
+rate_limit:
+  enabled: true
+  rps: 50000
+  burst: 100000
+  per_client: false
+  per_client_rps: 5000
+  per_client_burst: 10000
+
+circuit_breaker:
+  enabled: true
+  window: 10s
+  buckets: 10
+  min_requests: 20
+  failure_ratio: 0.5
+  open_timeout: 5s
+  half_open_max: 5
+
+logging:
+  level: "info"
+  format: "json"
+  sample_rate: 0
+
+proxy:
+  max_recv_msg_size: 16777216
+  max_send_msg_size: 16777216
+  shutdown_grace: 10s

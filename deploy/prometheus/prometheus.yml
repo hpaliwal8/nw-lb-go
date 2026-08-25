@@ -1,0 +1,63 @@
+# Prometheus configuration for the nw-lb-go compose stack.
+# Mounted read-only at /etc/prometheus/prometheus.yml.
+
+global:
+  # 5s. The SLO is 200 ms and the interesting events (a breaker opening, a
+  # backend flapping) last seconds, not minutes; a 15s default would alias them
+  # away. Every rate() range in alerts.yml and in the Grafana dashboard is at
+  # least 4x this, which keeps the "at least four samples per range" rule.
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+
+  # Stamped onto every series that leaves this server (federation, remote
+  # write, Alertmanager), so an alert firing here is attributable.
+  external_labels:
+    cluster: nw-lb-go
+    environment: local
+    stack: docker-compose
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# No Alertmanager is defined: this stack has nowhere to page. Rules still
+# evaluate, and you can watch them at http://localhost:9091/alerts. To wire one
+# up, add an alertmanager service to docker-compose.yml and uncomment:
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # The load balancer's admin server. `listen` is the gRPC port (8080); the
+  # metrics live on `admin_listen` (9090).
+  - job_name: lb
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["lb:9090"]
+        labels:
+          component: loadbalancer
+
+  # The demo upstreams. Each backend serves /metrics on its -admin-listen port,
+  # which is :9101 inside every container (the host-side ports differ).
+  - job_name: backends
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "backend-1:9101"
+          - "backend-2:9101"
+          - "backend-3:9101"
+        labels:
+          component: backend
+    relabel_configs:
+      # instance defaults to "backend-1:9101"; the port is noise here.
+      - source_labels: [__address__]
+        regex: "([^:]+)(?::\\d+)?"
+        target_label: instance
+        replacement: "$1"
+
+  # Prometheus scraping itself: cheap, and it is how you notice the server is
+  # falling behind (prometheus_target_scrape_pool_exceeded_*, tsdb head stats).
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,70 @@
+# nw-lb-go load balancer configuration for the docker compose topology: each backend is reachable
+# by its compose service name over the bridge network's embedded DNS.
+#
+# Resolution order is defaults -> this file -> LB_* environment variables -> flags. Unknown keys are
+# a hard error (the decoder runs with KnownFields(true)), so a typo fails the process at startup
+# instead of silently reverting to a default. LB_BACKENDS therefore still wins over the list below
+# if compose sets it.
+#
+# For running everything on one host, use config/lb.local.yaml instead — same settings, loopback
+# addresses, and no success logging.
+
+listen: ":8080"
+admin_listen: ":9090"
+
+backends:
+  - id: backend-1
+    addr: "backend-1:50051"
+    weight: 100
+  - id: backend-2
+    addr: "backend-2:50051"
+    weight: 100
+  - id: backend-3
+    addr: "backend-3:50051"
+    weight: 100
+
+routing:
+  # Requests carrying this metadata key stick to one backend; without it the peer IP is the key.
+  hash_header: "x-session-id"
+  virtual_nodes: 200
+  max_attempts: 3
+  # connect-failure (default, at-most-once) | unavailable (at-least-once) | none
+  retry_policy: "connect-failure"
+
+health:
+  interval: "1s"
+  timeout: "500ms"
+  # 2 consecutive successes to take traffic, 3 consecutive failures to lose it, so a single lost
+  # probe never moves traffic.
+  rise: 2
+  fall: 3
+  service: ""
+
+rate_limit:
+  enabled: true
+  rps: 50000
+  burst: 100000
+  per_client: false
+  per_client_rps: 5000
+  per_client_burst: 10000
+
+circuit_breaker:
+  enabled: true
+  window: "10s"
+  buckets: 10
+  min_requests: 20
+  failure_ratio: 0.5
+  open_timeout: "5s"
+  half_open_max: 5
+
+logging:
+  level: "info"
+  format: "json"
+  # 1% of successful RPCs are logged; every non-OK RPC is logged regardless. An unsampled access log
+  # is the most expensive thing in the request path at these rates.
+  sample_rate: 0.01
+
+proxy:
+  max_recv_msg_size: 16777216
+  max_send_msg_size: 16777216
+  shutdown_grace: "10s"

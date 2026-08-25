@@ -1,0 +1,61 @@
+# Build context is the repository root:
+#   docker build -f deploy/docker/Dockerfile.backend -t nw-lb-go/backend:dev .
+#
+# The demo upstream. Same two-stage shape as Dockerfile.lb; see the comments
+# there for why CGO is off and why there is no HEALTHCHECK.
+
+ARG GO_VERSION=1.25
+
+# ---------------------------------------------------------------------------
+# builder
+# ---------------------------------------------------------------------------
+FROM golang:${GO_VERSION}-alpine AS builder
+
+WORKDIR /src
+
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=local
+
+# Dependency layer, kept separate from the source so it caches.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG TARGETOS
+ARG TARGETARCH
+
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-$(go env GOARCH)} \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/backend \
+      ./cmd/backend
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="nw-lb-go demo backend" \
+      org.opencontainers.image.source="https://github.com/hitanshpaliwal/nw-lb-go" \
+      org.opencontainers.image.version="${VERSION}"
+
+USER nonroot:nonroot
+
+COPY --from=builder /out/backend /usr/local/bin/backend
+
+# 50051 = gRPC (EchoService + grpc.health.v1.Health + reflection)
+# 9101  = admin HTTP: /healthz, /metrics
+EXPOSE 50051 9101
+
+# No HEALTHCHECK: distroless has no shell and no HTTP client, so there is no
+# binary for a probe to exec — and a compose-level `healthcheck:` runs in this
+# same container, so it hits the identical wall. The backend's health is
+# observed two ways from outside: the LB's own gRPC health checker
+# (grpc.health.v1.Health/Check, surfaced as lb_backend_healthy) and the
+# Prometheus scrape of :9101 (`up`). docker-compose.yml repeats this note.
+
+ENTRYPOINT ["/usr/local/bin/backend"]

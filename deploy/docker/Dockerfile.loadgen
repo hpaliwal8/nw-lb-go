@@ -1,0 +1,58 @@
+# Build context is the repository root:
+#   docker build -f deploy/docker/Dockerfile.loadgen -t nw-lb-go/loadgen:dev .
+#
+# The measurement tool. It is a one-shot job, not a service: it runs for
+# -duration and exits, writing a JSON report to -out.
+
+ARG GO_VERSION=1.25
+
+# ---------------------------------------------------------------------------
+# builder
+# ---------------------------------------------------------------------------
+FROM golang:${GO_VERSION}-alpine AS builder
+
+WORKDIR /src
+
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=local
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG TARGETOS
+ARG TARGETARCH
+
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-$(go env GOARCH)} \
+    go build \
+      -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/loadgen \
+      ./cmd/loadgen
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="nw-lb-go load generator" \
+      org.opencontainers.image.source="https://github.com/hitanshpaliwal/nw-lb-go" \
+      org.opencontainers.image.version="${VERSION}"
+
+USER nonroot:nonroot
+
+COPY --from=builder /out/loadgen /usr/local/bin/loadgen
+
+# No ports: loadgen only dials out.
+#
+# No HEALTHCHECK either, and here it would be wrong even on a base that had a
+# shell — this is a batch job. Its exit code is the health signal, and compose
+# runs it with `restart: "no"` so a finished run stays finished.
+#
+# -out is expected to land under /bench/results, which docker-compose.yml bind
+# mounts from ./bench/results on the host.
+
+ENTRYPOINT ["/usr/local/bin/loadgen"]
