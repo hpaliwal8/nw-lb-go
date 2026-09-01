@@ -350,11 +350,7 @@
   function mountAll(root) {
     registry.forEach((fig, i) => {
       const section = html("section", { class: "figure", id: fig.id });
-      const h = html("h2", null, [
-        html("span", { class: "num", text: "Fig. " + (i + 1) }),
-        document.createTextNode(fig.title),
-      ]);
-      section.appendChild(h);
+      section.appendChild(html("h2", { text: fig.title }));
       if (fig.lede) section.appendChild(html("p", { class: "lede", text: fig.lede }));
 
       const stageEl = html("div", { class: "stage" });
