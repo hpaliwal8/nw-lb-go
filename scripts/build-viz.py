@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "docs" / "viz" / "src"
 OUT = ROOT / "docs" / "viz" / "index.html"
 ARTIFACT_OUT = ROOT / "docs" / "viz" / "artifact.html"
+PUBLIC_OUT = ROOT / "public" / "index.html"   # what Vercel serves
 
 # Registration order is figure order on the page.
 FIGURES = [
@@ -65,6 +66,11 @@ def main():
     ARTIFACT_OUT.write_text(artifact, encoding="utf-8")
     akb = len(artifact.encode("utf-8")) / 1024
     print(f"build-viz: wrote {ARTIFACT_OUT.relative_to(ROOT)} ({akb:.0f} KB, artifact variant)")
+
+    # The deploy root holds exactly one file, so nothing else in the repo is ever served.
+    PUBLIC_OUT.parent.mkdir(parents=True, exist_ok=True)
+    PUBLIC_OUT.write_text(page, encoding="utf-8")
+    print(f"build-viz: wrote {PUBLIC_OUT.relative_to(ROOT)} (deploy root)")
 
 
 if __name__ == "__main__":

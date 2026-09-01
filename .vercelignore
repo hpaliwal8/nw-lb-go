@@ -1,0 +1,12 @@
+# Only public/ is served. Everything else just slows the upload down.
+bin/
+bench/
+gen/
+cmd/
+internal/
+test/
+deploy/
+docs/
+*.go
+go.sum
+Makefile

@@ -1,0 +1,1261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nw-lb-go</title>
+<meta name="description" content="Three interactive figures from a Go layer-7 gRPC load balancer: consistent hashing, retry safety, and how its latency was measured.">
+<style>/* One font, white ground, ink and three signal colours. Nothing else.
+ *
+ * Light only and deliberately so: it paints its own background and declares color-scheme, so it
+ * keeps its appearance inside a dark host rather than borrowing one. */
+
+:root {
+  --bg: #ffffff;
+  --ink: #111111;
+  --ink-soft: #555555;
+  --ink-faint: #888888;
+  --rule: #dddddd;
+
+  /* Colour is only ever used to mean something: normal, failure, recovered. */
+  --accent-blue: #1f5f9e;
+  --accent-red: #b03028;
+  --accent-green: #2f7048;
+  --accent-amber: #9a6b1f;
+
+  --w-thin: 0.7;
+  --w-semi: 1.1;
+
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.wrap {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 5rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}
+
+.subtitle {
+  color: var(--ink-soft);
+  margin: 0 0 2.5rem;
+  max-width: 60ch;
+}
+
+.masthead .meta,
+footer.colophon { display: none; }
+
+section.figure { margin: 0 0 3.5rem; }
+
+.figure > h2 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 0.35rem;
+}
+
+.figure > .lede {
+  color: var(--ink-soft);
+  margin: 0 0 1rem;
+  max-width: 60ch;
+}
+
+.stage svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.85rem;
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.controls .group { display: flex; align-items: center; gap: 0.4rem; }
+.controls .label { color: var(--ink-faint); }
+
+button.ctl {
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--ink);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+button.ctl:hover { border-color: var(--ink-faint); }
+button.ctl:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+button.ctl[aria-pressed="true"] { border-color: var(--accent-red); color: var(--accent-red); }
+button.ctl[disabled] { opacity: 0.4; cursor: default; }
+
+input[type="range"] { width: 130px; accent-color: var(--ink-soft); cursor: pointer; }
+
+.readout {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.readout b { color: var(--ink); font-weight: 600; }
+
+.caption {
+  margin: 0.7rem 0 0;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  max-width: 60ch;
+}
+
+/* SVG primitives. One family throughout; the mono class survives only so the figures keep their
+ * numbers aligned. */
+.s-node { fill: none; stroke: var(--ink); stroke-width: var(--w-semi); }
+.s-node-soft { fill: none; stroke: var(--rule); stroke-width: var(--w-thin); }
+.s-wire { fill: none; stroke: var(--rule); stroke-width: var(--w-thin); }
+.s-wire-live { fill: none; stroke: var(--ink-faint); stroke-width: var(--w-semi); }
+.s-label { fill: var(--ink); font-family: var(--font); font-size: 12.5px; }
+.s-label-sm { fill: var(--ink-soft); font-family: var(--font); font-size: 11px; }
+.s-mono { fill: var(--ink-soft); font-family: var(--font); font-size: 11px; font-variant-numeric: tabular-nums; }
+.s-dead { stroke: var(--accent-red); }
+.s-muted { opacity: 0.32; }
+
+.pkt { pointer-events: none; }
+
+.motion-note { display: none; }
+
+@media (max-width: 640px) {
+  .wrap { padding: 2rem 1rem 3rem; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <h1>nw-lb-go</h1>
+  <p class="subtitle">
+    A layer 7 gRPC load balancer in Go. The figures run the real routing code.
+  </p>
+</header>
+
+<main id="figures"></main>
+
+</div>
+<script>/* Shared foundation for every figure: SVG construction, one animation clock, packet motion along
+ * real paths, and a consistent-hash ring that behaves like the Go one so the routing figures agree
+ * with the system they document. No dependencies. */
+(function (global) {
+  "use strict";
+
+  const SVGNS = "http://www.w3.org/2000/svg";
+
+  /* ---------------------------------------------------------------- construction */
+
+  // el("circle", {r: 4, class: "pkt"}, [children]) — attribute names are passed through verbatim,
+  // so hyphenated SVG attributes work without translation.
+  function el(name, attrs, children) {
+    const node = document.createElementNS(SVGNS, name);
+    if (attrs) {
+      for (const k in attrs) {
+        const v = attrs[k];
+        if (v === null || v === undefined || v === false) continue;
+        if (k === "text") node.textContent = String(v);
+        else node.setAttribute(k, String(v));
+      }
+    }
+    if (children) for (const c of children) if (c) node.appendChild(c);
+    return node;
+  }
+
+  function html(name, attrs, children) {
+    const node = document.createElement(name);
+    if (attrs) {
+      for (const k in attrs) {
+        const v = attrs[k];
+        if (v === null || v === undefined || v === false) continue;
+        if (k === "text") node.textContent = String(v);
+        else if (k === "class") node.className = String(v);
+        else node.setAttribute(k, String(v));
+      }
+    }
+    if (children) for (const c of children) if (c) node.appendChild(c);
+    return node;
+  }
+
+  // Every figure shares one arrowhead vocabulary so the drawings look like one document. The
+  // geometry is a slim stealth head; markers inherit stroke colour via context-stroke where the
+  // browser supports it and fall back to currentColor otherwise.
+  function defs() {
+    const mk = (id, color) =>
+      el("marker", {
+        id: id, viewBox: "0 0 10 8", refX: 9.2, refY: 4,
+        markerWidth: 7, markerHeight: 6, orient: "auto-start-reverse",
+      }, [el("path", { d: "M0,0 L10,4 L0,8 L2.6,4 Z", fill: color })]);
+
+    return el("defs", null, [
+      mk("ah", "context-stroke"),
+      mk("ah-ink", "var(--ink)"),
+      mk("ah-faint", "var(--ink-faint)"),
+      mk("ah-blue", "var(--accent-blue)"),
+      mk("ah-red", "var(--accent-red)"),
+      mk("ah-green", "var(--accent-green)"),
+    ]);
+  }
+
+  // A figure's root <svg>. Width is fluid; the viewBox fixes the coordinate system so every
+  // diagram can be authored in absolute units and still be responsive.
+  function stage(w, h, label) {
+    const s = el("svg", {
+      viewBox: `0 0 ${w} ${h}`,
+      role: "img",
+      "aria-label": label || "",
+      preserveAspectRatio: "xMidYMid meet",
+    }, [defs()]);
+    return s;
+  }
+
+  function text(x, y, str, cls, extra) {
+    return el("text", Object.assign({ x: x, y: y, class: cls || "s-label", text: str }, extra || {}));
+  }
+
+  // A TikZ-ish node: thin rounded rect with a centred label. Returns {g, cx, cy, w, h}.
+  function box(x, y, w, h, label, opts) {
+    const o = opts || {};
+    const g = el("g", { class: o.class || "" });
+    g.appendChild(el("rect", {
+      x: x, y: y, width: w, height: h, rx: o.rx === undefined ? 3 : o.rx,
+      class: o.boxClass || "s-node", fill: o.fill || "none",
+    }));
+    if (label) {
+      g.appendChild(text(x + w / 2, y + h / 2 + 4.5, label, o.labelClass || "s-label", {
+        "text-anchor": "middle",
+      }));
+    }
+    return { g: g, x: x, y: y, w: w, h: h, cx: x + w / 2, cy: y + h / 2 };
+  }
+
+  /* ------------------------------------------------------------------- the clock */
+
+  const reduced = global.matchMedia
+    ? global.matchMedia("(prefers-reduced-motion: reduce)").matches
+    : false;
+
+  // One requestAnimationFrame loop drives every figure. Figures register a step(dt) and are only
+  // stepped while their container is on screen, so a page of six simulations costs about as much
+  // as the one you are looking at.
+  const Ticker = (function () {
+    const subs = new Set();
+    let last = 0, running = false;
+
+    function frame(now) {
+      if (!running) return;
+      const dt = last ? Math.min((now - last) / 1000, 0.1) : 0;
+      last = now;
+      for (const s of subs) {
+        if (!s.visible) continue;
+        try { s.step(dt); } catch (err) { /* one bad figure must not stop the page */ }
+      }
+      global.requestAnimationFrame(frame);
+    }
+
+    function start() {
+      if (running) return;
+      running = true; last = 0;
+      global.requestAnimationFrame(frame);
+    }
+
+    return {
+      add(step, node) {
+        const sub = { step: step, visible: true };
+        subs.add(sub);
+        if (node && global.IntersectionObserver) {
+          sub.visible = false;
+          const io = new IntersectionObserver((entries) => {
+            for (const e of entries) sub.visible = e.isIntersecting;
+          }, { rootMargin: "80px" });
+          io.observe(node);
+        }
+        start();
+        return () => subs.delete(sub);
+      },
+      get reduced() { return reduced; },
+    };
+  })();
+
+  /* ------------------------------------------------------------------- packets */
+
+  // Packets travel along the very path element that draws the wire, so a dot can never drift off
+  // its line: the geometry has exactly one source of truth.
+  function Flight(pathEl, opts) {
+    const o = opts || {};
+    this.path = pathEl;
+    this.len = pathEl.getTotalLength();
+    this.speed = o.speed || 160;      // user units per second
+    this.dist = o.from || 0;
+    this.done = false;
+    this.node = o.node;
+    this.onArrive = o.onArrive || null;
+  }
+  Flight.prototype.step = function (dt) {
+    if (this.done) return;
+    this.dist += this.speed * dt;
+    if (this.dist >= this.len) {
+      this.dist = this.len;
+      this.done = true;
+    }
+    const p = this.path.getPointAtLength(this.dist);
+    if (this.node) {
+      this.node.setAttribute("cx", p.x.toFixed(2));
+      this.node.setAttribute("cy", p.y.toFixed(2));
+    }
+    if (this.done && this.onArrive) this.onArrive();
+    return p;
+  };
+
+  // A pool keeps packet circles alive rather than churning DOM nodes at 60fps.
+  function PacketPool(layer, opts) {
+    this.layer = layer;
+    this.free = [];
+    this.live = [];
+    this.r = (opts && opts.r) || 3;
+  }
+  PacketPool.prototype.spawn = function (pathEl, opts) {
+    const o = opts || {};
+    let node = this.free.pop();
+    if (!node) {
+      node = el("circle", { r: this.r, class: "pkt" });
+      this.layer.appendChild(node);
+    }
+    node.setAttribute("r", o.r || this.r);
+    node.setAttribute("fill", o.fill || "var(--accent-blue)");
+    node.setAttribute("opacity", o.opacity === undefined ? 1 : o.opacity);
+    node.style.display = "";
+    const self = this;
+    const f = new Flight(pathEl, {
+      speed: o.speed, from: o.from, node: node,
+      onArrive: function () {
+        if (o.onArrive) o.onArrive();
+      },
+    });
+    f._node = node;
+    this.live.push(f);
+    return f;
+  };
+  PacketPool.prototype.step = function (dt) {
+    for (let i = this.live.length - 1; i >= 0; i--) {
+      const f = this.live[i];
+      f.step(dt);
+      if (f.done) {
+        f._node.style.display = "none";
+        this.free.push(f._node);
+        this.live.splice(i, 1);
+      }
+    }
+  };
+  PacketPool.prototype.clear = function () {
+    for (const f of this.live) {
+      f._node.style.display = "none";
+      this.free.push(f._node);
+    }
+    this.live.length = 0;
+  };
+
+  /* --------------------------------------------------------------------- model */
+
+  // FNV-1a followed by MurmurHash3's finaliser. Not the xxhash the Go side uses — the point is a
+  // well-distributed 32-bit hash so the ring behaves the same way, not that the two agree on
+  // placements.
+  //
+  // The avalanche step is not optional. FNV alone barely mixes its high bits for inputs that differ
+  // only in a trailing index, which is exactly the shape of a virtual node key ("backend-1#0",
+  // "backend-1#1", ...). Without it, 84 virtual nodes landed in clumps that left a single 22.4% hole
+  // in the ring and gave one backend 52% of the keys — a drawing that would have argued against the
+  // very property it exists to demonstrate. With it the largest gap is 7.1% and the split is
+  // 42/26/32, whose remaining skew is the honest small-sample behaviour of 28 virtual nodes per
+  // member rather than an artefact of the hash.
+  function hash32(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35) >>> 0;
+    h ^= h >>> 16;
+    return h >>> 0;
+  }
+
+  // Consistent hash ring with weighted virtual nodes, mirroring internal/hashring.
+  //
+  // The property worth preserving here is the one the Go tests assert: membership is the set of
+  // CONFIGURED members and never changes with health. Health is a filter applied over the ordered
+  // candidate list, so a backend going down remaps only the keys it owned.
+  function Ring(members, vnodes) {
+    this.vnodes = vnodes || 60;
+    this.setMembers(members || []);
+  }
+  Ring.prototype.setMembers = function (members) {
+    this.members = members.slice();
+    const pts = [];
+    for (const m of this.members) {
+      const n = Math.max(1, Math.round((this.vnodes * (m.weight || 100)) / 100));
+      for (let i = 0; i < n; i++) pts.push({ h: hash32(m.id + "#" + i), id: m.id });
+    }
+    // Sort on (hash, id) so identical membership always yields an identical ring regardless of
+    // insertion order — the determinism the Go tests check.
+    pts.sort((a, b) => (a.h - b.h) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    this.points = pts;
+  };
+  Ring.prototype.indexFor = function (key) {
+    const h = hash32(key);
+    const pts = this.points;
+    if (!pts.length) return -1;
+    let lo = 0, hi = pts.length - 1, ans = 0, found = false;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid].h >= h) { ans = mid; found = true; hi = mid - 1; } else lo = mid + 1;
+    }
+    return found ? ans : 0; // wrap
+  };
+  // Ordered distinct owners, primary first — the preference list the balancer filters.
+  Ring.prototype.candidates = function (key, n) {
+    const pts = this.points;
+    if (!pts.length) return [];
+    const start = this.indexFor(key);
+    const out = [];
+    for (let i = 0; i < pts.length && out.length < (n || pts.length); i++) {
+      const id = pts[(start + i) % pts.length].id;
+      if (out.indexOf(id) === -1) out.push(id);
+    }
+    return out;
+  };
+  // Route applies the health/breaker filter over ring order, with the fail-open ladder the Go
+  // balancer uses: available, then healthy, then anything.
+  Ring.prototype.route = function (key, isAvailable) {
+    const cands = this.candidates(key);
+    for (const id of cands) if (isAvailable(id)) return id;
+    return cands.length ? cands[0] : null;
+  };
+
+  // Deterministic PRNG so a reload tells the same story.
+  function rng(seed) {
+    let s = seed >>> 0 || 1;
+    return function () {
+      s ^= s << 13; s >>>= 0;
+      s ^= s >> 17;
+      s ^= s << 5; s >>>= 0;
+      return s / 4294967296;
+    };
+  }
+
+  /* -------------------------------------------------------------------- controls */
+
+  function button(label, onClick, opts) {
+    const o = opts || {};
+    const b = html("button", { class: "ctl", type: "button", text: label });
+    if (o.pressed !== undefined) b.setAttribute("aria-pressed", String(!!o.pressed));
+    b.addEventListener("click", () => onClick(b));
+    return b;
+  }
+
+  function slider(opts) {
+    const o = opts || {};
+    const input = html("input", {
+      type: "range", min: o.min, max: o.max, step: o.step || 1, value: o.value,
+      "aria-label": o.label || "value",
+    });
+    input.addEventListener("input", () => o.onInput(Number(input.value), input));
+    return input;
+  }
+
+  function readout(initial) {
+    const n = html("span", { class: "readout" });
+    n.innerHTML = initial || "";
+    return n;
+  }
+
+  function group(children) {
+    return html("div", { class: "group" }, children);
+  }
+
+  function label(str) {
+    return html("span", { class: "label", text: str });
+  }
+
+  /* --------------------------------------------------------------------- figures */
+
+  const registry = [];
+
+  function register(fig) { registry.push(fig); }
+
+  function mountAll(root) {
+    registry.forEach((fig, i) => {
+      const section = html("section", { class: "figure", id: fig.id });
+      section.appendChild(html("h2", { text: fig.title }));
+      if (fig.lede) section.appendChild(html("p", { class: "lede", text: fig.lede }));
+
+      const stageEl = html("div", { class: "stage" });
+      const controls = html("div", { class: "controls" });
+      section.appendChild(stageEl);
+      root.appendChild(section);
+
+      let api = null;
+      try {
+        api = fig.mount(stageEl, controls, API);
+      } catch (err) {
+        stageEl.appendChild(html("p", { class: "caption", text: "This figure failed to load." }));
+        if (global.console) console.error("figure " + fig.id + " failed:", err);
+      }
+      if (controls.childNodes.length) stageEl.appendChild(controls);
+
+      if (fig.caption) section.appendChild(html("p", { class: "caption", text: fig.caption }));
+      if (api && api.step) Ticker.add(api.step, stageEl);
+    });
+  }
+
+  const API = {
+    el: el, html: html, stage: stage, text: text, box: box, defs: defs,
+    Ticker: Ticker, Flight: Flight, PacketPool: PacketPool,
+    Ring: Ring, hash32: hash32, rng: rng,
+    button: button, slider: slider, readout: readout, group: group, label: label,
+    register: register, mountAll: mountAll,
+    reduced: reduced,
+    SVGNS: SVGNS,
+  };
+
+  global.NWLB = API;
+})(window);
+
+
+/* ---- ring ---- */
+/* Fig. ring — kill a backend, and only its keys move.
+ *
+ * One circle, twenty-four key dots, three backend labels. Nothing else is drawn, because nothing
+ * else is being argued. Routing is the real X.Ring; modulo mode is a real hash(key) mod liveCount.
+ * The only motion in the figure is a remap: dots whose owner actually changed slide along the ring
+ * to their new owner and take its colour. Every other dot holds still. */
+NWLB.register({
+  id: "ring",
+  title: 'Consistent hashing',
+  lede:
+    'Kill a backend. Only the keys it owned move.',
+  caption:
+    'Each dot is a session key, coloured by the backend that answers it. Turn on modulo hashing and kill the same backend to see what the usual approach costs.',
+
+  mount: function (stageEl, controlsEl, X) {
+    /* element count: 25 drawn elements — 1 ring circle + 24 key dots. Static text: 3 labels, one
+     * per backend; the number in each is a live count, not a caption. The flight arcs below are
+     * stroke-less geometry carriers cut from the same circle at the same radius — PacketPool needs
+     * a <path> to walk, and a <circle> cannot be walked in part — so they draw no ink, and the
+     * packets riding them are moving, not static. */
+
+    /* ------------------------------------------------------------------ geometry */
+    var W = 880, H = 340;
+    var CX = 440, CY = 162;
+    var R = 132;              // the ring; the key dots sit on it
+    var RL = R + 24;          // backend labels, just outside it
+    var TAU = Math.PI * 2;
+    var NKEYS = 24;
+    var VNODES = 3;           // per backend: few enough that each backend owns one visible arc
+    var DOT = 4.5;
+
+    var BE = [
+      { id: "backend-1", col: "var(--accent-blue)" },
+      { id: "backend-2", col: "var(--accent-green)" },
+      { id: "backend-3", col: "var(--accent-amber)" }
+    ];
+    var DEAD = "var(--accent-red)";
+    var FAINT = "var(--ink-faint)";
+    var THIN = "var(--w-thin)";
+
+    var live = [true, true, true];
+    var modulo = false;
+
+    /* --------------------------------------------------------------------- model */
+    // Membership is every configured backend, exactly as in internal/hashring: health never
+    // rebuilds the ring, it only filters the clockwise scan.
+    var ring = new X.Ring(
+      BE.map(function (b) { return { id: b.id, weight: 100 }; }),
+      VNODES
+    );
+    var pts = ring.points;
+    var idxOf = {};
+    BE.forEach(function (b, i) { idxOf[b.id] = i; });
+
+    function px(a, r) { return CX + r * Math.cos(a); }
+    function py(a, r) { return CY + r * Math.sin(a); }
+    function f2(n) { return n.toFixed(2); }
+
+    // Clockwise arc: y grows downwards, so increasing angle is clockwise on screen.
+    function arcD(a0, a1, r) {
+      var d = a1 - a0;
+      if (d <= 0) d += TAU;
+      return "M" + f2(px(a0, r)) + " " + f2(py(a0, r)) +
+        " A" + r + " " + r + " 0 " + (d > Math.PI ? 1 : 0) + " 1 " +
+        f2(px(a1, r)) + " " + f2(py(a1, r));
+    }
+
+    function liveCount() {
+      var n = 0;
+      for (var i = 0; i < 3; i++) if (live[i]) n++;
+      return n;
+    }
+
+    function ownerOf(k) {
+      var i;
+      if (!modulo) {
+        // The clockwise scan: first live virtual node at or after the key.
+        for (i = 0; i < pts.length; i++) {
+          var bi = idxOf[pts[(k.ai + i) % pts.length].id];
+          if (live[bi]) return bi;
+        }
+        return idxOf[pts[k.ai].id];       // nothing healthy: fail open to the ring's own answer
+      }
+      var lc = liveCount();
+      if (lc === 0) return k.h % 3;
+      var order = [];
+      for (i = 0; i < 3; i++) if (live[i]) order.push(i);
+      return order[k.h % lc];             // the slots renumber on every failure
+    }
+
+    // Twenty-four session keys, drawn deterministically and taken as they come. Seed 0x2a splits
+    // 8/6/10 across the three backends with each backend holding one contiguous arc, which is what
+    // three virtual nodes apiece buys; no key is filtered to make that happen.
+    var rnd = X.rng(0x2a);
+    var HEX = "0123456789abcdef";
+    var keys = [], seen = {}, guard = 0;
+    while (keys.length < NKEYS && guard < 20000) {
+      guard++;
+      var s = "sess-";
+      for (var q = 0; q < 4; q++) s += HEX[Math.floor(rnd() * 16)];
+      if (seen[s]) continue;
+      seen[s] = 1;
+      keys.push({ id: s, h: X.hash32(s), ai: ring.indexFor(s), owner: 0, flying: false });
+    }
+    // Hash order becomes angular order, so a key's neighbours on screen are its neighbours on the
+    // ring: an owner's keys land in one arc, and a remap really does travel clockwise.
+    keys.sort(function (a, b) { return a.h - b.h; });
+    var i;
+    for (i = 0; i < NKEYS; i++) {
+      var k = keys[i];
+      k.ang = -Math.PI / 2 + (i + 0.5) * (TAU / NKEYS);
+      k.owner = ownerOf(k);
+    }
+
+    /* ---------------------------------------------------------------------- stage */
+    var svg = X.stage(W, H,
+      "A ring of twenty-four session key dots, each filled with the colour of the backend that " +
+      "answers it, with the three backends named outside the arcs they own. Killing a backend " +
+      "moves only its own dots; modulo hashing moves nearly all of them.");
+    stageEl.appendChild(svg);
+
+    var gArcs = X.el("g"), gDots = X.el("g"), gPkt = X.el("g"), gLab = X.el("g");
+    svg.appendChild(X.el("circle", { cx: CX, cy: CY, r: R, class: "s-node-soft" }));
+    [gArcs, gDots, gPkt, gLab].forEach(function (g) { svg.appendChild(g); });
+
+    for (i = 0; i < NKEYS; i++) {
+      keys[i].dot = X.el("circle", {
+        cx: f2(px(keys[i].ang, R)), cy: f2(py(keys[i].ang, R)), r: DOT,
+        fill: BE[keys[i].owner].col
+      });
+      gDots.appendChild(keys[i].dot);
+    }
+
+    // One label per backend, parked at the angular centre of the arc it owns when all three are up.
+    // Fixed for the life of the figure: a label that chased its arc would be a second moving thing.
+    var labels = BE.map(function (b, bi) {
+      var sx = 0, sy = 0;
+      for (var j = 0; j < NKEYS; j++) {
+        if (keys[j].owner !== bi) continue;
+        sx += Math.cos(keys[j].ang); sy += Math.sin(keys[j].ang);
+      }
+      var a = Math.atan2(sy, sx), c = Math.cos(a);
+      return X.el("text", {
+        x: f2(px(a, RL)), y: f2(py(a, RL) + 4), class: "s-mono",
+        style: "font-size: 12px",
+        "text-anchor": c > 0.35 ? "start" : c < -0.35 ? "end" : "middle"
+      });
+    });
+    labels.forEach(function (t) { gLab.appendChild(t); });
+
+    /* ------------------------------------------------------------------- painting */
+    function fill(k) {
+      k.dot.setAttribute("fill", BE[k.owner].col);
+      k.dot.setAttribute("stroke", "none");
+    }
+    function hollow(k) {
+      k.dot.setAttribute("fill", "none");
+      k.dot.setAttribute("stroke", FAINT);
+      k.dot.setAttribute("stroke-width", THIN);
+    }
+
+    function paintLabels() {
+      var counts = [0, 0, 0];
+      for (var j = 0; j < NKEYS; j++) counts[keys[j].owner]++;
+      for (var b = 0; b < 3; b++) {
+        labels[b].textContent = BE[b].id + " · " + counts[b];
+        labels[b].style.fill = live[b] ? BE[b].col : DEAD;
+      }
+    }
+
+    /* ------------------------------------------------------------------- movement */
+    var pool = new X.PacketPool(gPkt, { r: DOT });
+    var free = [], used = [];
+
+    function takeArc() {
+      var p = free.pop();
+      if (!p) { p = X.el("path", { fill: "none", stroke: "none" }); gArcs.appendChild(p); }
+      used.push(p);
+      return p;
+    }
+    function releaseArc(p) {
+      var j = used.indexOf(p);
+      if (j >= 0) used.splice(j, 1);
+      free.push(p);
+    }
+    function stopAll() {
+      pool.clear();
+      for (var j = used.length - 1; j >= 0; j--) free.push(used[j]);
+      used.length = 0;
+      for (j = 0; j < NKEYS; j++) {
+        if (keys[j].flying) { keys[j].flying = false; fill(keys[j]); }
+      }
+    }
+
+    // Where a remapped key travels to: the first dot clockwise that the new owner now answers.
+    // Under consistent hashing that is the head of the neighbouring arc, so a dead backend's keys
+    // sweep forward together; under modulo it is wherever the renumbering happened to land.
+    function destOf(idx) {
+      var o = keys[idx].owner;
+      for (var s = 1; s < NKEYS; s++) {
+        var j = (idx + s) % NKEYS;
+        if (keys[j].owner === o) return keys[j].ang;
+      }
+      return null;
+    }
+
+    function fly(idx) {
+      var k = keys[idx];
+      var a1 = destOf(idx);
+      if (a1 === null) { fill(k); return; }
+      var p = takeArc();
+      p.setAttribute("d", arcD(k.ang, a1, R));
+      var len = p.getTotalLength();
+      if (len < 1) { fill(k); return; }
+      k.flying = true;
+      hollow(k);
+      pool.spawn(p, {
+        speed: len / Math.max(0.55, len / 420),
+        fill: BE[k.owner].col,
+        onArrive: function () {
+          releaseArc(p);
+          k.flying = false;
+          fill(k);
+        }
+      }).step(0);   // seat it on the path now, so a recycled dot never flashes at its old position
+    }
+
+    function apply() {
+      stopAll();
+      var moved = 0, j;
+      var next = [];
+      for (j = 0; j < NKEYS; j++) next.push(ownerOf(keys[j]));
+      for (j = 0; j < NKEYS; j++) {
+        if (next[j] !== keys[j].owner) { keys[j].owner = next[j]; keys[j].changed = true; moved++; }
+        else keys[j].changed = false;
+      }
+      for (j = 0; j < NKEYS; j++) {
+        if (!keys[j].changed) continue;
+        if (X.reduced) fill(keys[j]); else fly(j);
+      }
+      paintLabels();
+      ro.innerHTML = "<b>" + moved + "</b> of " + NKEYS + " keys moved";
+    }
+
+    /* ------------------------------------------------------------------- controls */
+    var ro = X.readout("<b>0</b> of " + NKEYS + " keys moved");
+
+    var killBtns = BE.map(function (b, bi) {
+      return X.button("kill " + b.id, function (btn) {
+        live[bi] = !live[bi];
+        btn.textContent = (live[bi] ? "kill " : "restore ") + b.id;
+        btn.setAttribute("aria-pressed", String(!live[bi]));
+        apply();
+      }, { pressed: false });
+    });
+
+    var modBtn = X.button("modulo hashing", function (btn) {
+      modulo = !modulo;
+      btn.setAttribute("aria-pressed", String(modulo));
+      apply();
+    }, { pressed: false });
+
+    controlsEl.appendChild(X.group(killBtns));
+    controlsEl.appendChild(X.group([modBtn]));
+    controlsEl.appendChild(ro);
+
+    paintLabels();
+
+    return {
+      step: function (dt) { pool.step(dt); }
+    };
+  }
+});
+
+
+/* ---- failover ---- */
+/* Figure: retry safety — replaying a request that already ran makes it run twice.
+ *
+ * Two identical rows, differing only in WHEN the first backend fails. The counters under the
+ * backends carry the whole argument: the top row totals one, and the bottom row totals two as soon
+ * as the policy is loose enough to replay a request that had already been executed. */
+(function () {
+  "use strict";
+
+  var W = 880, H = 256;
+  var Y1 = 72, Y2 = 190;
+
+  var CX = 40, CW = 76;            // client
+  var LX = 186, LW = 120;          // load balancer
+  var B1 = 452, B2 = 728, BW = 112, BH = 34;
+  var STOP = 410;                  // row one is refused here, short of the first backend
+
+  NWLB.register({
+    id: "failover",
+    title: 'Retry safety',
+
+    lede:
+      'A request that already ran must not run again.',
+
+    caption:
+      'The top row fails before the backend sees the request, so retrying is safe. The bottom row fails after. Change the policy and watch the counters under each backend.',
+
+    mount: function (stageEl, controlsEl, X) {
+      // element count: 21 static drawn elements — 8 boxes, 6 wires, 1 red mark, 6 text labels.
+      // The four counter numbers are data values and the packets move, so neither is counted.
+
+      var svg = X.stage(W, H,
+        "Two rows, each a client, a load balancer and two backends, with a counter under each " +
+        "backend showing how many times the request ran there.");
+      stageEl.appendChild(svg);
+
+      var gWire = X.el("g"), gNode = X.el("g"), gPkt = X.el("g");
+      svg.appendChild(gWire);
+      svg.appendChild(gNode);
+      svg.appendChild(gPkt);
+
+      var pool = new X.PacketPool(gPkt, { r: 4 });
+
+      var INK = "var(--ink)";
+      var FAINT = "var(--ink-faint)";
+      var BLUE = "var(--accent-blue)";
+      var RED = "var(--accent-red)";
+      var AMBER = "var(--accent-amber)";
+
+      var SPEED = X.reduced ? 120 : 210;   // user units per second
+      var BEAT = X.reduced ? 1.3 : 0.6;    // dwell at a failure
+      var SETTLE = X.reduced ? 2.6 : 1.6;  // let a row's counters be read before the other moves
+      var LINGER = X.reduced ? 4.6 : 3.2;  // longer, when the count reached two
+
+      /* ------------------------------------------------------------------ primitives */
+
+      function box(x, y, w, h, label, labelClass) {
+        var b = X.box(x, y, w, h, label, { labelClass: labelClass });
+        b.rect = b.g.querySelector("rect");
+        gNode.appendChild(b.g);
+        return b;
+      }
+
+      // A wire is the <path> that both draws the line and carries the packets, so a dot can never
+      // leave its line: there is exactly one piece of geometry.
+      function wire(d) {
+        var p = X.el("path", { d: d, class: "s-wire" });
+        gWire.appendChild(p);
+        return p;
+      }
+
+      // The counter is a bare number. It is the only thing in the drawing that changes state, so it
+      // needs no chrome to be found.
+      function counter(cx, y) {
+        var t = X.text(cx, y, "0", "s-mono", { "text-anchor": "middle" });
+        t.style.fontSize = "16px";
+        t.style.fill = FAINT;
+        gNode.appendChild(t);
+        return { el: t, n: 0 };
+      }
+
+      /* ---------------------------------------------------------------------- a row */
+
+      // Both rows carry their labels. Leaving the second row's boxes empty saved six words and cost
+      // the reader a row of blank rectangles, which reads as unfinished rather than as restraint.
+      function buildRow(y, title, refused, named) {
+        var R = { y: y };
+
+        gNode.appendChild(X.text(CX, y - 52, title, "s-label"));
+
+        R.w0 = wire("M " + (CX + CW) + " " + y + " H " + LX);
+        R.w1 = wire("M " + (LX + LW) + " " + y + " H " + (refused ? STOP : B1));
+        R.w2 = wire("M " + (LX + LW) + " " + y +
+          " C " + (LX + LW + 90) + " " + (y - 46) +
+          ", " + (B1 + 114) + " " + (y - 46) +
+          ", " + B2 + " " + y);
+
+        R.client = box(CX, y - 17, CW, 34, named ? "client" : null, "s-label");
+        R.lb = box(LX, y - 20, LW, 40, named ? "load balancer" : null, "s-label");
+        R.b1 = box(B1, y - BH / 2, BW, BH, named ? "backend-1" : null, "s-mono");
+        R.b2 = box(B2, y - BH / 2, BW, BH, named ? "backend-2" : null, "s-mono");
+
+        if (refused) {
+          gWire.appendChild(X.el("path", {
+            d: "M " + STOP + " " + (y - 10) + " V " + (y + 10), class: "s-node s-dead",
+          }));
+        }
+
+        R.c1 = counter(B1 + BW / 2, y + 38);
+        R.c2 = counter(B2 + BW / 2, y + 38);
+        return R;
+      }
+
+      var A = buildRow(Y1, "fails before delivery", true, true);
+      var B = buildRow(Y2, "fails after running it", false, true);
+
+      /* ------------------------------------------------------------------- counters */
+
+      // The damage is that two different backends each did the work, so a row that totals two turns
+      // both of its numbers red together.
+      function paint(R) {
+        var tone = (R.c1.n + R.c2.n) >= 2 ? RED : INK;
+        R.c1.el.style.fill = R.c1.n ? tone : FAINT;
+        R.c2.el.style.fill = R.c2.n ? tone : FAINT;
+      }
+
+      function tick(R, c) {
+        c.n += 1;
+        c.el.textContent = String(c.n);
+        paint(R);
+        if (R === B) report();
+      }
+
+      function resetRow(R) {
+        R.c1.n = 0;
+        R.c2.n = 0;
+        R.c1.el.textContent = "0";
+        R.c2.el.textContent = "0";
+        paint(R);
+        R.b1.rect.setAttribute("class", "s-node");
+        if (R === B) report();
+      }
+
+      /* -------------------------------------------------------------------- controls */
+
+      var policy = "connect-failure";
+      var readout = X.readout("row two ran the request <b>0</b> times");
+      var buttons = {};
+
+      function report() {
+        readout.innerHTML = "row two ran the request <b>" + (B.c1.n + B.c2.n) + "</b> times";
+      }
+
+      function policyButton(id, text) {
+        var b = X.button(text, function () { choose(id); }, { pressed: id === policy });
+        buttons[id] = b;
+        return b;
+      }
+
+      controlsEl.appendChild(X.group([
+        X.label("retry policy"),
+        policyButton("connect-failure", "connect-failure (default)"),
+        policyButton("unavailable", "unavailable"),
+        policyButton("none", "none"),
+      ]));
+      controlsEl.appendChild(readout);
+
+      /* --------------------------------------------------------------------- the run */
+
+      var hold = 0, after = null, next = null;
+
+      function fly(pathEl, color, then) {
+        pool.spawn(pathEl, {
+          speed: SPEED, fill: color, r: 4,
+          onArrive: function () { next = then; },
+        });
+      }
+
+      function pause(secs, then) {
+        hold = secs;
+        after = then;
+      }
+
+      // Row one: refused on the wire, so nothing executed and the replay costs one execution.
+      function runA() {
+        resetRow(A);
+        fly(A.w0, BLUE, function () {
+          fly(A.w1, BLUE, function () {
+            pause(BEAT, function () {
+              if (policy === "none") { pause(SETTLE, runB); return; }
+              fly(A.w2, BLUE, function () {
+                tick(A, A.c2);
+                pause(SETTLE, runB);
+              });
+            });
+          });
+        });
+      }
+
+      // Row two: delivered and executed, and only then does the backend die. Replaying it now buys
+      // a second execution of work that had already happened.
+      function runB() {
+        resetRow(B);
+        fly(B.w0, BLUE, function () {
+          fly(B.w1, BLUE, function () {
+            tick(B, B.c1);
+            B.b1.rect.setAttribute("class", "s-node s-dead");
+            pause(BEAT, function () {
+              if (policy !== "unavailable") { pause(SETTLE, runA); return; }
+              fly(B.w2, AMBER, function () {
+                tick(B, B.c2);
+                pause(LINGER, runA);
+              });
+            });
+          });
+        });
+      }
+
+      function choose(p) {
+        policy = p;
+        for (var k in buttons) buttons[k].setAttribute("aria-pressed", String(k === policy));
+        pool.clear();
+        next = null;
+        after = null;
+        hold = 0;
+        resetRow(A);
+        resetRow(B);
+        pause(0.35, runA);
+      }
+
+      pause(0.4, runA);
+
+      return {
+        step: function (dt) {
+          pool.step(dt);
+          if (next) {
+            var n = next;
+            next = null;
+            n();
+          }
+          if (hold > 0) {
+            hold -= dt;
+            if (hold <= 0) {
+              hold = 0;
+              var a = after;
+              after = null;
+              if (a) a();
+            }
+          }
+        },
+      };
+    },
+  });
+})();
+
+
+/* ---- omission ---- */
+/* Two timers.
+ *
+ * One request, drawn once. The only thing worth seeing is that the response bracket is longer than
+ * the service bracket, and that raising the offered load stretches one and not the other. */
+NWLB.register({
+  id: 'omission',
+  title: 'Two timers',
+  lede: 'Service time measures the server. Response time measures the wait the server caused.',
+  caption: 'Drag the offered load past capacity. One timer barely moves. The other runs away. A closed loop client stops sending when the server stalls, so it never sees the backlog it caused.',
+
+  mount: function (stageEl, controlsEl, X) {
+    /* element count: 6 drawn (1 time line, 3 marks, 2 brackets). Static labels: 4. The two
+     * millisecond figures are data, not annotation. */
+
+    var W = 880, H = 150;
+    var X0 = 150, X1 = 782;          // the time line runs between these
+    var GUT = 132;                   // right-aligned gutter for the bracket names
+    var NUM = 868;                   // right-aligned column for the two numbers
+    var Y_LINE = 32, Y_RESP = 86, Y_SERV = 122;
+
+    // Measured on the real run: 52,600 rps was where this host stopped keeping up, and 55,000 rps
+    // offered produced a service p99 of 38 ms against a response p99 of 696 ms.
+    var CAPACITY = 52600, RUN_S = 15;
+
+    var svg = X.stage(W, H, 'One request, with service time and response time drawn to the same scale');
+    stageEl.appendChild(svg);
+
+    var gStatic = X.el('g', null);
+    var gDyn = X.el('g', null);
+    var gPkt = X.el('g', null);
+    svg.appendChild(gStatic);
+    svg.appendChild(gDyn);
+    svg.appendChild(gPkt);
+
+    function line(d, cls, extra) {
+      return X.el('path', Object.assign({ d: d, class: cls || 's-wire' }, extra || {}));
+    }
+
+    // --- static ink -------------------------------------------------------------------------
+    gStatic.appendChild(line('M' + X0 + ',' + Y_LINE + 'H' + X1, 's-wire'));
+    gStatic.appendChild(X.text(X0, Y_LINE + 24, 'due', 's-label-sm', { 'text-anchor': 'middle' }));
+    gStatic.appendChild(X.text(X1, Y_LINE + 24, 'done', 's-label-sm', { 'text-anchor': 'middle' }));
+    gStatic.appendChild(X.text(GUT, Y_RESP + 4, 'response', 's-label', { 'text-anchor': 'end' }));
+    gStatic.appendChild(X.text(GUT, Y_SERV + 4, 'service', 's-label', { 'text-anchor': 'end' }));
+
+    // --- ink that moves with the slider -----------------------------------------------------
+    var TICK = 7;
+    var mDue = gDyn.appendChild(line('', 's-wire-live'));
+    var mSent = gDyn.appendChild(line('', '', {
+      stroke: 'var(--accent-amber)', 'stroke-width': 'var(--w-semi)', fill: 'none',
+    }));
+    var mDone = gDyn.appendChild(line('', 's-wire-live'));
+
+    var bResp = gDyn.appendChild(line('', '', {
+      stroke: 'var(--accent-red)', 'stroke-width': 'var(--w-semi)', fill: 'none',
+    }));
+    var bServ = gDyn.appendChild(line('', '', {
+      stroke: 'var(--accent-blue)', 'stroke-width': 'var(--w-semi)', fill: 'none',
+    }));
+
+    var nResp = gDyn.appendChild(X.text(NUM, Y_RESP + 4, '', 's-mono', {
+      'text-anchor': 'end', fill: 'var(--accent-red)',
+    }));
+    var nServ = gDyn.appendChild(X.text(NUM, Y_SERV + 4, '', 's-mono', {
+      'text-anchor': 'end', fill: 'var(--accent-blue)',
+    }));
+
+    var pool = new X.PacketPool(gPkt, { r: 3.5 });
+
+    // --- the model --------------------------------------------------------------------------
+    //
+    // Below capacity the server is the only cost. Above it, every second of the run adds the excess
+    // to a queue that drains at capacity, so the wait is the backlog divided by the drain rate. At
+    // 55,000 offered that lands at 684 ms of waiting on top of 38 ms of service, which is the
+    // shape the real 696 ms measurement had.
+    function model(offered) {
+      var u = offered / CAPACITY;
+      var service = 2 + 36 * Math.pow(Math.min(u, 1), 3);
+      var wait;
+      if (offered > CAPACITY) {
+        wait = ((offered - CAPACITY) * RUN_S / CAPACITY) * 1000;
+      } else {
+        wait = service * Math.pow(u, 4) * 1.5;
+      }
+      return { service: service, wait: wait, response: service + wait };
+    }
+
+    function fmt(ms) {
+      return (ms >= 100 ? Math.round(ms) : Math.round(ms * 10) / 10) + ' ms';
+    }
+
+    // Open past capacity. At 30,000 rps the two brackets are within a millisecond of each other and
+    // the figure silently argues the opposite of its point.
+    var offered = 54000;
+    var shown = model(offered);      // eased toward the target so dragging reads as motion
+    var sentX = X0;
+
+    function layout() {
+      var span = X1 - X0;
+      // Both brackets share one scale, set so the response bracket always spans the drawing. That
+      // shared scale is the whole comparison: as the wait grows, service shrinks to a sliver.
+      var scale = span / Math.max(shown.response, 0.001);
+      sentX = X0 + shown.wait * scale;
+      if (sentX > X1 - 2) sentX = X1 - 2;
+
+      mDue.setAttribute('d', 'M' + X0 + ',' + (Y_LINE - TICK) + 'V' + (Y_LINE + TICK));
+      mSent.setAttribute('d', 'M' + sentX.toFixed(1) + ',' + (Y_LINE - TICK) + 'V' + (Y_LINE + TICK));
+      mDone.setAttribute('d', 'M' + X1 + ',' + (Y_LINE - TICK) + 'V' + (Y_LINE + TICK));
+
+      bResp.setAttribute('d', 'M' + X0 + ',' + Y_RESP + 'H' + X1);
+      bServ.setAttribute('d', 'M' + sentX.toFixed(1) + ',' + Y_SERV + 'H' + X1);
+
+      nResp.textContent = fmt(shown.response);
+      nServ.textContent = fmt(shown.service);
+    }
+
+    // --- controls ---------------------------------------------------------------------------
+    var out = X.readout('');
+    function refresh() {
+      var m = model(offered);
+      out.innerHTML = 'offered <b>' + offered.toLocaleString() + '</b> rps &middot; capacity <b>' +
+        CAPACITY.toLocaleString() + '</b> &middot; service <b>' + fmt(m.service) +
+        '</b> &middot; response <b>' + fmt(m.response) + '</b>';
+    }
+
+    controlsEl.appendChild(X.group([
+      X.label('offered load'),
+      X.slider({
+        min: 20000, max: 56000, step: 500, value: offered, label: 'offered load in requests per second',
+        onInput: function (v) { offered = v; pool.clear(); refresh(); },
+      }),
+    ]));
+    controlsEl.appendChild(out);
+    refresh();
+
+    // --- one journey, twice, at one speed ---------------------------------------------------
+    var SPEED = X.reduced ? 90 : 240;   // user units per second, identical on both brackets
+    var live = 0, gap = 0;
+
+    function launch() {
+      live = 2;
+      // step(0) seats each dot on its path immediately, so a fresh one never flashes at the origin.
+      pool.spawn(bResp, {
+        speed: SPEED, fill: 'var(--accent-red)',
+        onArrive: function () { live--; },
+      }).step(0);
+      pool.spawn(bServ, {
+        speed: SPEED, fill: 'var(--accent-blue)',
+        onArrive: function () { live--; },
+      }).step(0);
+    }
+
+    layout();
+    launch();
+
+    return {
+      step: function (dt) {
+        var target = model(offered);
+        var k = Math.min(1, dt * 6);
+        shown.service += (target.service - shown.service) * k;
+        shown.wait += (target.wait - shown.wait) * k;
+        shown.response = shown.service + shown.wait;
+        layout();
+
+        pool.step(dt);
+        if (live <= 0) {
+          gap += dt;
+          if (gap > (X.reduced ? 2.2 : 0.7)) { gap = 0; launch(); }
+        }
+      },
+    };
+  },
+});
+
+
+NWLB.mountAll(document.getElementById('figures'));</script>
+</body>
+</html>

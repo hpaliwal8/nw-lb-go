@@ -31,33 +31,39 @@ back to that list to bring one in.
 
 ## Hosting
 
-The page is a single file, so every option below is a copy.
+The page is one file with no external requests, so hosting it is a copy. `public/index.html` is the
+deploy root and holds nothing else, so no other file in the repo is ever served. `make viz` rewrites
+it along with the other outputs.
 
-**Any static host.** Netlify, Vercel, Cloudflare Pages, S3 + CloudFront, or a directory on your own
-server. Drop `index.html` in and you are done. Netlify and Cloudflare will take a drag-and-drop of
-the file itself.
+### Vercel
 
-**GitHub Pages.** This repo has no remote yet. Once it has one:
+`vercel.json` is already set up: no framework, no build step, `public` as the output directory.
 
 ```sh
-git add -A && git commit -m "Add interactive figures"
-git push -u origin main
+vercel login          # once, opens a browser
+make viz-deploy       # builds, then deploys to production
 ```
 
-Then in the repository settings, under Pages, set the source to `main` and the folder to `/docs`.
-The page lands at `https://<user>.github.io/<repo>/viz/`. A `CNAME` file in `docs/` points a custom
-domain at it.
+The first deploy asks which scope to use and what to call the project. Accept the defaults for the
+rest, since `vercel.json` already answers the framework and output questions.
 
-**Embedded in an existing portfolio.** Because it is one file with no globals beyond `NWLB` and no network
-calls, an `<iframe>` is safe and isolates the styling completely.
+To deploy on every push instead, commit and push, then import the repository at vercel.com/new.
+Vercel reads the same `vercel.json`, so the settings match either way. Add a custom domain under the
+project's Domains tab.
+
+### Anywhere else
+
+Netlify, Cloudflare Pages, S3, GitHub Pages, or a directory on your own server. Copy
+`public/index.html` in and you are done. Netlify and Cloudflare accept a drag and drop of the file
+itself.
+
+To embed it in a portfolio you already own, an `<iframe>` isolates the styling completely, since the
+page has no globals beyond `NWLB` and makes no network calls.
 
 ```html
 <iframe src="/nw-lb-go-figures.html" style="width:100%;height:900px;border:0" loading="lazy"
         title="nw-lb-go interactive figures"></iframe>
 ```
-
-If you would rather inline it into a page you already own, take `src/style.css` and the built
-`<script>` block and mount into your own container — `NWLB.mountAll(el)` is the only entry point.
 
 ## Notes for a reader
 

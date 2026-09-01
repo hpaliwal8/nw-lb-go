@@ -47,7 +47,7 @@ BENCH_BASELINE_LABEL ?= baseline-direct-$(BENCH_MODE)-$(BENCH_RPS)rps
 BENCH_BASELINE_OUT   ?= $(BENCH_DIR)/$(BENCH_BASELINE_LABEL).json
 
 .PHONY: help proto build test test-race lint vet cover run-backends stop-backends run-lb \
-        bench bench-baseline docker-build up down logs clean viz viz-check viz-open
+        bench bench-baseline docker-build up down logs clean viz viz-check viz-open viz-deploy
 
 ##@ Help
 
@@ -217,3 +217,6 @@ viz-check: ## Build the page, then prove in headless Chrome that every figure mo
 
 viz-open: viz ## Build and open the page in the default browser
 	open docs/viz/index.html
+
+viz-deploy: viz ## Build and deploy the page to Vercel production (needs `vercel login` once)
+	vercel deploy --prod
