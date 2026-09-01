@@ -58,7 +58,7 @@ def main():
     # page's content only. Everything else — styles, script, theming — is identical.
     body = page.split("<body>", 1)[1].rsplit("</body>", 1)[0]
     artifact = (
-        "<title>nw-lb-go</title>\n"
+        "<title>Level 7 Load Balancer</title>\n"
         + f"<style>{css}</style>\n"
         + body.strip()
         + "\n"
